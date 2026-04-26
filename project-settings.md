@@ -19,21 +19,28 @@ Run this on 20 URLs from your Excel before writing any other code. If <70% succe
 File: `backend/scripts/validate_transcripts.py`
 
 ```python
+# Library: youtube-transcript-api >= 1.0 (v1.2.4 confirmed working).
+# Pre-1.0 used YouTubeTranscriptApi.list_transcripts() as a classmethod;
+# v1.x changed it to an instance method ytt.list(id). Do not revert.
 from youtube_transcript_api import YouTubeTranscriptApi
 
 test_ids = ["...", "..."]  # 20 IDs from your Excel
 
+ytt = YouTubeTranscriptApi()
+
 for vid_id in test_ids:
     try:
-        tl = YouTubeTranscriptApi.list_transcripts(vid_id)
+        tl = ytt.list(vid_id)
         te = tl.find_generated_transcript(['te'])
         en = te.translate('en').fetch()
-        print(f"OK  {vid_id}: {len(en)} segments")
+        print(f"OK  {vid_id}: {len(list(en))} segments")
     except Exception as e:
-        print(f"ERR {vid_id}: {e}")
+        print(f"ERR {vid_id}: {type(e).__name__}: {e}")
 ```
 
-Record the success rate in the Session 1 handoff.
+If <70% succeed, run the yt-dlp fallback validator at `backend/scripts/validate_transcripts_ytdlp.py` before writing M1. Known failure mode for the library: YouTube IP-blocks transcript fetches from cloud or rate-limited residential IPs (`RequestBlocked` / `IpBlocked`). yt-dlp's browser-impersonating fetch usually still works.
+
+Record both success rates in the Session 1 handoff.
 
 ---
 

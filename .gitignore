@@ -29,6 +29,10 @@ desktop.ini
 # Cowork-local state (never commit)
 OUTPUTS/
 
+# YouTube auth — never commit, contains session cookies
+cookies.txt
+**/cookies.txt
+
 # Logs
 *.log
 logs/

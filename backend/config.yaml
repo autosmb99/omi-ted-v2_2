@@ -1,0 +1,10 @@
+# OMI-TED v2 — LLM and translation config.
+# Provider is a config swap, never a code change. See backend/services/llm_router.py (M5).
+llm:
+  provider: sarvam        # sarvam | google | openrouter | local
+  model: sarvam-translate
+  timeout_s: 30
+  cache: true             # skip API call if same te_text already translated
+
+content_type:
+  song_max_words: 5       # heuristic: segments with <= N words may be song lyrics
