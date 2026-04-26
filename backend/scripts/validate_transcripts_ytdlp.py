@@ -56,6 +56,8 @@ BASE_OPTS = {
     "quiet": True,
     "no_warnings": True,
     "extract_flat": False,
+    # Return metadata (including subtitles) even when no downloadable format exists.
+    "ignore_no_formats_error": True,
 }
 
 PROBE_ID = test_ids[0]
@@ -77,7 +79,22 @@ def candidate_sources():
 
 
 def probe(opts):
-    """Try to fetch one video. Return (ok, message)."""
+    """Try to fetch one video. Return (ok, message).
+
+    "Requested format is not available" means YouTube let yt-dlp through the
+    auth wall — the cookies are valid. Only treat genuine auth/network errors
+    as failures.
+    """
+    # Auth-failure signals from yt-dlp
+    AUTH_PHRASES = (
+        "sign in",
+        "login",
+        "confirm you're not a bot",
+        "dpapi",
+        "could not copy",
+        "could not find",
+        "failed to decrypt",
+    )
     try:
         with yt_dlp.YoutubeDL({**BASE_OPTS, **opts}) as ydl:
             info = ydl.extract_info(PROBE_URL, download=False)
@@ -86,6 +103,16 @@ def probe(opts):
         return True, "ok"
     except Exception as e:
         msg = str(e)
+        msg_lower = msg.lower()
+        # Format errors mean auth succeeded — YouTube returned video metadata.
+        if "requested format is not available" in msg_lower:
+            return True, "ok (format unavailable, but auth passed)"
+        # Real auth / cookie errors → genuine failure.
+        if any(p in msg_lower for p in AUTH_PHRASES):
+            if len(msg) > 250:
+                msg = msg[:250] + "..."
+            return False, f"{type(e).__name__}: {msg}"
+        # Unknown error — treat as auth failure so we try the next source.
         if len(msg) > 250:
             msg = msg[:250] + "..."
         return False, f"{type(e).__name__}: {msg}"

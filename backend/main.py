@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from fastapi import FastAPI
 
-from routers import health
+from routers import health, ingest
 
 app = FastAPI(
     title="OMI-TED v2",
@@ -17,8 +17,10 @@ app = FastAPI(
 # Health check is unprefixed so Railway's healthcheck can hit it directly.
 app.include_router(health.router)
 
-# Future routers (M1+): mount under /api/v1
-# app.include_router(ingest.router, prefix="/api/v1/ingest", tags=["ingest"])
+# M1 — transcript ingest
+app.include_router(ingest.router, prefix="/api/v1/ingest", tags=["ingest"])
+
+# Future routers (M2+)
 # app.include_router(editor.router, prefix="/api/v1/editor", tags=["editor"])
 # app.include_router(export.router, prefix="/api/v1/export", tags=["export"])
 # app.include_router(batch.router,  prefix="/api/v1/batch",  tags=["batch"])
