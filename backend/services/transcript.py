@@ -2,10 +2,7 @@
 Transcript fetch service — pure I/O, no DB.
 
 Fetches Telugu auto-captions (+ English if available) for a YouTube video
-using yt-dlp + a cookies.txt file, then parses the raw subtitle data into
-clean segment dicts.
-
-The ingest router owns all DB writes; this module just returns data.
+using yt-dlp + a cookies.txt file, then parses subtitle data into segments.
 
 Cookie file: $YTDLP_COOKIES_FILE env variable (required at runtime).
 """
@@ -19,10 +16,6 @@ from functools import partial
 import httpx
 import yt_dlp
 
-# ---------------------------------------------------------------------------
-# yt-dlp options (shared between probe and full extract)
-# ---------------------------------------------------------------------------
-
 _YDL_OPTS: dict = {
     "skip_download": True,
     "quiet": True,
@@ -30,10 +23,6 @@ _YDL_OPTS: dict = {
     "ignore_no_formats_error": True,
 }
 
-
-# ---------------------------------------------------------------------------
-# Public data types
-# ---------------------------------------------------------------------------
 
 @dataclass
 class SegmentData:
@@ -52,19 +41,12 @@ class VideoData:
     has_te: bool = False
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
 def get_cookies_file() -> str:
-    """Read YTDLP_COOKIES_FILE from env. Raises RuntimeError with a clear message."""
     path = os.environ.get("YTDLP_COOKIES_FILE", "").strip()
     if not path:
         raise RuntimeError(
-            "YTDLP_COOKIES_FILE is not set. "
-            "Export cookies.txt from your browser (use the 'Get cookies.txt LOCALLY' "
-            "Chrome extension, visit youtube.com, export), save the file, then set:\n"
-            "  $env:YTDLP_COOKIES_FILE='C:\\path\\to\\cookies.txt'"
+            "YTDLP_COOKIES_FILE is not set. Export cookies.txt from your browser "
+            "and set: $env:YTDLP_COOKIES_FILE='C:\\path\\to\\cookies.txt'"
         )
     if not os.path.exists(path):
         raise RuntimeError(f"Cookies file not found: {path}")
@@ -72,7 +54,6 @@ def get_cookies_file() -> str:
 
 
 def _pick_json3(formats: list[dict]) -> str | None:
-    """Return the URL of the json3 subtitle format, or the first available URL."""
     for fmt in formats:
         if fmt.get("ext") == "json3":
             return fmt.get("url")
@@ -80,12 +61,6 @@ def _pick_json3(formats: list[dict]) -> str | None:
 
 
 def _parse_json3(data: dict) -> list[dict]:
-    """
-    Parse YouTube's json3 subtitle format.
-
-    Each event looks like:
-      {"tStartMs": 1234, "dDurationMs": 2000, "segs": [{"utf8": "text"}, ...]}
-    """
     segments: list[dict] = []
     for event in data.get("events", []):
         segs = event.get("segs")
@@ -102,17 +77,31 @@ def _parse_json3(data: dict) -> list[dict]:
     return segments
 
 
+def _load_cookies(cookies_file: str) -> dict[str, str]:
+    cookies: dict[str, str] = {}
+    try:
+        with open(cookies_file) as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                parts = line.split("\t")
+                if len(parts) >= 7:
+                    cookies[parts[5]] = parts[6]
+    except Exception:
+        pass
+    return cookies
+
+
 async def _download_subtitle(
     url: str,
     cookies_file: str | None = None,
     required: bool = True,
 ) -> list[dict]:
     """
-    Fetch a subtitle URL (json3) and parse it into segment dicts.
-
-    Passes browser-style cookies so YouTube doesn't 429 the timedtext endpoint.
-    If required=True, raises on HTTP errors (Telugu — we can't proceed without it).
-    If required=False, returns [] on any error (English — M5 fills it via LLM).
+    Fetch subtitle URL (json3) with browser-style headers + cookies.
+    required=True  -> raises on error (Telugu: we need it)
+    required=False -> returns [] on error (English: M5 fills it via LLM)
     """
     headers = {
         "User-Agent": (
@@ -123,22 +112,7 @@ async def _download_subtitle(
         "Accept-Language": "en-US,en;q=0.9",
         "Referer": "https://www.youtube.com/",
     }
-
-    # Load cookies from file if provided
-    cookies: dict[str, str] = {}
-    if cookies_file and os.path.exists(cookies_file):
-        try:
-            with open(cookies_file) as f:
-                for line in f:
-                    line = line.strip()
-                    if not line or line.startswith("#"):
-                        continue
-                    parts = line.split("\t")
-                    if len(parts) >= 7:
-                        cookies[parts[5]] = parts[6]
-        except Exception:
-            pass  # cookie parse errors are non-fatal
-
+    cookies = _load_cookies(cookies_file) if cookies_file else {}
     try:
         async with httpx.AsyncClient(
             timeout=30, follow_redirects=True, headers=headers, cookies=cookies
@@ -149,34 +123,23 @@ async def _download_subtitle(
     except Exception:
         if required:
             raise
-        return []  # English is optional — M5 will translate via LLM
+        return []
 
 
 def _ydl_extract(youtube_id: str, cookies_file: str) -> dict:
-    """
-    Synchronous yt-dlp metadata fetch.
-    Run via run_in_executor — never call directly from async code.
-    """
     url = f"https://www.youtube.com/watch?v={youtube_id}"
     opts = {**_YDL_OPTS, "cookiefile": cookies_file}
     with yt_dlp.YoutubeDL(opts) as ydl:
         return ydl.extract_info(url, download=False) or {}
 
 
-# ---------------------------------------------------------------------------
-# Public API
-# ---------------------------------------------------------------------------
-
 async def fetch_video(youtube_id: str) -> VideoData:
     """
     Fetch metadata + Telugu (+ English if available) auto-captions for one video.
-
-    Returns a VideoData with parsed SegmentData rows.
     Raises RuntimeError / yt_dlp.DownloadError on failure.
     """
     cookies_file = get_cookies_file()
 
-    # yt-dlp is synchronous — run in the default thread executor
     loop = asyncio.get_running_loop()
     info = await loop.run_in_executor(
         None, partial(_ydl_extract, youtube_id, cookies_file)
@@ -196,7 +159,6 @@ async def fetch_video(youtube_id: str) -> VideoData:
     en_formats = auto_caps.get("en") or manual_subs.get("en") or []
 
     if not te_formats:
-        # No Telugu captions at all — signal this to the router
         return VideoData(
             title=title, channel=channel, duration_s=duration_s,
             segments=[], has_te=False,
@@ -205,21 +167,18 @@ async def fetch_video(youtube_id: str) -> VideoData:
     te_url = _pick_json3(te_formats)
     en_url = _pick_json3(en_formats)
 
-    # Telugu subtitles are required — let any exception propagate to the router.
-    # English is optional — 429s and errors are silently skipped (M5 fills it via LLM).
+    # Telugu is required; English is optional (silent fail)
     te_raw = await _download_subtitle(te_url, cookies_file, required=True)
 
     en_raw: list[dict] = []
     if en_url:
         en_raw = await _download_subtitle(en_url, cookies_file, required=False)
 
-    # Align English segments to Telugu by start_time (within 50 ms tolerance)
     en_by_start: dict[float, str] = {s["start_time"]: s["text"] for s in en_raw}
 
     def _closest_en(start: float) -> str | None:
         if start in en_by_start:
             return en_by_start[start]
-        # 50 ms tolerance for floating-point drift
         for k, v in en_by_start.items():
             if abs(k - start) <= 0.05:
                 return v

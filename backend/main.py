@@ -5,8 +5,9 @@ Run locally:  uvicorn main:app --reload
 from __future__ import annotations
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
-from routers import health, ingest
+from routers import health, ingest, videos, export
 
 app = FastAPI(
     title="OMI-TED v2",
@@ -14,13 +15,14 @@ app = FastAPI(
     version="0.1.0",
 )
 
-# Health check is unprefixed so Railway's healthcheck can hit it directly.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 app.include_router(health.router)
-
-# M1 — transcript ingest
 app.include_router(ingest.router, prefix="/api/v1/ingest", tags=["ingest"])
-
-# Future routers (M2+)
-# app.include_router(editor.router, prefix="/api/v1/editor", tags=["editor"])
-# app.include_router(export.router, prefix="/api/v1/export", tags=["export"])
-# app.include_router(batch.router,  prefix="/api/v1/batch",  tags=["batch"])
+app.include_router(videos.router, prefix="/api/v1", tags=["videos"])
+app.include_router(export.router, prefix="/api/v1", tags=["export"])
