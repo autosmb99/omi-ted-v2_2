@@ -13,8 +13,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY backend/ .
 
 ENV PYTHONPATH=/app
-ENV PORT=8000
 
-EXPOSE 8000
-
-CMD uvicorn main:app --host 0.0.0.0 --port ${PORT}
+# PORT is injected by Railway — do not hardcode
+CMD uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}
