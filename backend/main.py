@@ -35,4 +35,7 @@ app.include_router(health.router)
 app.include_router(ingest.router,       prefix="/api/v1/ingest", tags=["ingest"])
 app.include_router(videos.router,       prefix="/api/v1",        tags=["videos"])
 app.include_router(export.router,       prefix="/api/v1",        tags=["export"])
-app.include_router(batch.r
+app.include_router(batch.router,        prefix="/api/v1",        tags=["batch"])
+app.include_router(stats.router,        prefix="/api/v1",        tags=["stats"])
+app.include_router(settings_api.router, prefix="/api/v1",        tags=["settings"])
+app.include_router(glossary.router,     prefix="/api/v1",        tags=["glossary"])
