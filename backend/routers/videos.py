@@ -1,22 +1,23 @@
 """
 Video and segment endpoints.
 
-GET  /api/v1/videos                          — list all videos
-GET  /api/v1/videos/{youtube_id}/segments    — paginated segments for one video
-PATCH /api/v1/segments/{segment_id}          — save human translation + review flag
+GET    /api/v1/videos                       — list all videos
+GET    /api/v1/videos/{youtube_id}/segments — paginated segments for one video
+DELETE /api/v1/videos/{youtube_id}          — delete a video and all segments
+PATCH  /api/v1/segments/{segment_id}        — save human translation + review flag
 """
 from __future__ import annotations
 
 from math import ceil
 
 from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response
 from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_session
-from models import Segment, Video
+from models import Job, Segment, Video
 
 router = APIRouter(tags=["videos"])
 
@@ -34,6 +35,7 @@ class VideoSummary(BaseModel):
     status: str
     segment_count: int
     fetched_at: str | None
+    error_msg: str | None = None
 
     class Config:
         from_attributes = True
@@ -78,11 +80,23 @@ class SegmentPatch(BaseModel):
 async def list_videos(
     session: AsyncSession = Depends(get_session),
 ) -> list[VideoSummary]:
-    """Return all videos with segment counts."""
+    """Return all videos with segment counts and latest job error_msg."""
+    # Correlated subquery: latest error_msg from jobs for each video
+    error_msg_subq = (
+        select(Job.error_msg)
+        .where(Job.video_id == Video.id)
+        .where(Job.error_msg.isnot(None))
+        .order_by(Job.id.desc())
+        .limit(1)
+        .correlate(Video)
+        .scalar_subquery()
+    )
+
     result = await session.execute(
         select(
             Video,
             func.count(Segment.id).label("segment_count"),
+            error_msg_subq.label("error_msg"),
         )
         .outerjoin(Segment, Segment.video_id == Video.id)
         .group_by(Video.id)
@@ -99,9 +113,27 @@ async def list_videos(
             status=video.status,
             segment_count=count,
             fetched_at=video.fetched_at.isoformat() if video.fetched_at else None,
+            error_msg=error_msg,
         )
-        for video, count in rows
+        for video, count, error_msg in rows
     ]
+
+
+@router.delete("/videos/{youtube_id}", status_code=204, response_class=Response)
+async def delete_video(
+    youtube_id: str,
+    session: AsyncSession = Depends(get_session),
+) -> Response:
+    """Delete a video and all its segments (cascade)."""
+    result = await session.execute(
+        select(Video).where(Video.youtube_id == youtube_id)
+    )
+    video = result.scalar_one_or_none()
+    if video is None:
+        raise HTTPException(status_code=404, detail=f"Video {youtube_id} not found.")
+    await session.delete(video)
+    await session.commit()
+    return Response(status_code=204)
 
 
 @router.get("/videos/{youtube_id}/segments", response_model=SegmentsPage)
@@ -155,14 +187,15 @@ async def patch_segment(
     session: AsyncSession = Depends(get_session),
 ) -> SegmentResponse:
     """Update en_human, is_reviewed, or quality_score on a segment."""
-    result = await session.execute(select(Segment).where(Segment.id == segment_id))
+    result = await session.execute(
+        select(Segment).where(Segment.id == segment_id)
+    )
     segment = result.scalar_one_or_none()
     if segment is None:
         raise HTTPException(status_code=404, detail=f"Segment {segment_id} not found.")
 
     if body.en_human is not None:
         segment.en_human = body.en_human
-        # en_final always = en_human if set, else en_auto
         segment.en_final = body.en_human if body.en_human.strip() else segment.en_auto
     if body.is_reviewed is not None:
         segment.is_reviewed = body.is_reviewed

@@ -1,10 +1,12 @@
 """
 Transcript fetch service — pure I/O, no DB.
 
-Fetches Telugu auto-captions (+ English if available) for a YouTube video
-using yt-dlp + a cookies.txt file, then parses subtitle data into segments.
+Priority order for fetching Telugu captions:
+  1. youtube-transcript-api  (no cookies, fastest, works on cloud IPs)
+  2. yt-dlp without cookies   (fallback, also works on Railway IPs)
+  3. Clear error to caller if both fail or no Telugu captions exist.
 
-Cookie file: $YTDLP_COOKIES_FILE env variable (required at runtime).
+Cookie file is optional (YTDLP_COOKIES_FILE env var) — ignored on Railway.
 """
 from __future__ import annotations
 
@@ -41,17 +43,117 @@ class VideoData:
     has_te: bool = False
 
 
-def get_cookies_file() -> str:
-    path = os.environ.get("YTDLP_COOKIES_FILE", "").strip()
-    if not path:
-        raise RuntimeError(
-            "YTDLP_COOKIES_FILE is not set. Export cookies.txt from your browser "
-            "and set: $env:YTDLP_COOKIES_FILE='C:\\path\\to\\cookies.txt'"
-        )
-    if not os.path.exists(path):
-        raise RuntimeError(f"Cookies file not found: {path}")
-    return path
+# ---------------------------------------------------------------------------
+# Sentence merger (unchanged — the smart chunker from session 11)
+# ---------------------------------------------------------------------------
 
+def merge_into_sentences(
+    raw: list[dict],
+    pause_threshold: float = 1.2,
+    max_chars: int = 200,
+) -> list[dict]:
+    """
+    Merge raw YouTube subtitle events (1-3 words each) into natural speech
+    units — the way a speaker actually pauses between thoughts.
+    """
+    if not raw:
+        return []
+
+    SENTENCE_ENDERS = frozenset(".?!|")
+
+    merged: list[dict] = []
+    chunk_start: float = raw[0]["start_time"]
+    chunk_text: str = raw[0]["text"]
+    chunk_end: float = raw[0]["start_time"] + raw[0]["duration"]
+
+    for evt in raw[1:]:
+        gap = evt["start_time"] - chunk_end
+        last_char = chunk_text.rstrip()[-1] if chunk_text.strip() else ""
+
+        natural_pause = gap > pause_threshold
+        ends_sentence = last_char in SENTENCE_ENDERS
+        too_long = len(chunk_text) > max_chars
+
+        if natural_pause or ends_sentence or too_long:
+            merged.append({
+                "start_time": chunk_start,
+                "duration":   max(chunk_end - chunk_start, 0.1),
+                "text":       chunk_text.strip(),
+            })
+            chunk_start = evt["start_time"]
+            chunk_text  = evt["text"]
+            chunk_end   = evt["start_time"] + evt["duration"]
+        else:
+            sep = " " if not chunk_text.endswith(" ") else ""
+            chunk_text = chunk_text + sep + evt["text"].lstrip()
+            chunk_end  = evt["start_time"] + evt["duration"]
+
+    if chunk_text.strip():
+        merged.append({
+            "start_time": chunk_start,
+            "duration":   max(chunk_end - chunk_start, 0.1),
+            "text":       chunk_text.strip(),
+        })
+
+    return merged
+
+
+# ---------------------------------------------------------------------------
+# Strategy 1: youtube-transcript-api (no cookies, pure HTTP)
+# ---------------------------------------------------------------------------
+
+def _ytapi_fetch(youtube_id: str) -> tuple[list[dict], list[dict]] | None:
+    """
+    Try youtube-transcript-api. Returns (te_raw, en_raw) or None if unavailable.
+    """
+    try:
+        from youtube_transcript_api import YouTubeTranscriptApi, NoTranscriptFound, TranscriptsDisabled
+    except ImportError:
+        return None  # library not installed
+
+    try:
+        transcript_list = YouTubeTranscriptApi.list_transcripts(youtube_id)
+    except Exception:
+        return None
+
+    # Fetch Telugu
+    te_raw: list[dict] = []
+    try:
+        te_transcript = transcript_list.find_transcript(["te"])
+        raw = te_transcript.fetch()
+        te_raw = [
+            {
+                "start_time": item["start"],
+                "duration": item.get("duration", 0),
+                "text": item["text"],
+            }
+            for item in raw
+        ]
+    except Exception:
+        pass
+
+    # Fetch English (optional)
+    en_raw: list[dict] = []
+    try:
+        en_transcript = transcript_list.find_transcript(["en"])
+        raw = en_transcript.fetch()
+        en_raw = [
+            {
+                "start_time": item["start"],
+                "duration": item.get("duration", 0),
+                "text": item["text"],
+            }
+            for item in raw
+        ]
+    except Exception:
+        pass
+
+    return te_raw, en_raw
+
+
+# ---------------------------------------------------------------------------
+# Strategy 2: yt-dlp (no cookies required, Railway IPs work fine)
+# ---------------------------------------------------------------------------
 
 def _pick_json3(formats: list[dict]) -> str | None:
     for fmt in formats:
@@ -93,16 +195,7 @@ def _load_cookies(cookies_file: str) -> dict[str, str]:
     return cookies
 
 
-async def _download_subtitle(
-    url: str,
-    cookies_file: str | None = None,
-    required: bool = True,
-) -> list[dict]:
-    """
-    Fetch subtitle URL (json3) with browser-style headers + cookies.
-    required=True  -> raises on error (Telugu: we need it)
-    required=False -> returns [] on error (English: M5 fills it via LLM)
-    """
+async def _download_subtitle(url: str, cookies_file: str | None = None, required: bool = True) -> list[dict]:
     headers = {
         "User-Agent": (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -126,31 +219,26 @@ async def _download_subtitle(
         return []
 
 
-def _ydl_extract(youtube_id: str, cookies_file: str) -> dict:
+def _ydl_extract(youtube_id: str, cookies_file: str | None) -> dict:
     url = f"https://www.youtube.com/watch?v={youtube_id}"
-    opts = {**_YDL_OPTS, "cookiefile": cookies_file}
+    opts = {**_YDL_OPTS}
+    if cookies_file and os.path.exists(cookies_file):
+        opts["cookiefile"] = cookies_file
     with yt_dlp.YoutubeDL(opts) as ydl:
         return ydl.extract_info(url, download=False) or {}
 
 
-async def fetch_video(youtube_id: str) -> VideoData:
+async def _ytdlp_fetch(youtube_id: str) -> tuple[str | None, str | None, dict]:
     """
-    Fetch metadata + Telugu (+ English if available) auto-captions for one video.
-    Raises RuntimeError / yt_dlp.DownloadError on failure.
+    Returns (te_url, en_url, info_dict) via yt-dlp.
+    cookies_file is used if YTDLP_COOKIES_FILE is set, otherwise no cookies.
     """
-    cookies_file = get_cookies_file()
-
+    cookies_file = os.environ.get("YTDLP_COOKIES_FILE", "").strip() or None
     loop = asyncio.get_running_loop()
-    info = await loop.run_in_executor(
-        None, partial(_ydl_extract, youtube_id, cookies_file)
-    )
+    info = await loop.run_in_executor(None, partial(_ydl_extract, youtube_id, cookies_file))
 
     if not info:
-        raise ValueError(f"yt-dlp returned empty info for {youtube_id}")
-
-    title      = info.get("title")
-    channel    = info.get("uploader") or info.get("channel")
-    duration_s = info.get("duration")
+        return None, None, {}
 
     auto_caps   = info.get("automatic_captions") or {}
     manual_subs = info.get("subtitles") or {}
@@ -158,40 +246,86 @@ async def fetch_video(youtube_id: str) -> VideoData:
     te_formats = auto_caps.get("te") or manual_subs.get("te") or []
     en_formats = auto_caps.get("en") or manual_subs.get("en") or []
 
-    if not te_formats:
-        return VideoData(
-            title=title, channel=channel, duration_s=duration_s,
-            segments=[], has_te=False,
+    te_url = _pick_json3(te_formats) if te_formats else None
+    en_url = _pick_json3(en_formats) if en_formats else None
+    return te_url, en_url, info
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
+async def fetch_video(youtube_id: str) -> VideoData:
+    """
+    Fetch metadata + Telugu (+ English if available) auto-captions.
+
+    Raises ValueError with a clear message if:
+      - Video has no Telugu captions
+      - Both fetch strategies fail
+    """
+    # ── Strategy 1: youtube-transcript-api ───────────────────────────────
+    loop = asyncio.get_running_loop()
+    ytapi_result = await loop.run_in_executor(None, _ytapi_fetch, youtube_id)
+
+    title: str | None = None
+    channel: str | None = None
+    duration_s: int | None = None
+    te_raw: list[dict] = []
+    en_raw: list[dict] = []
+
+    if ytapi_result is not None:
+        te_raw, en_raw = ytapi_result
+
+    # ── Strategy 2: yt-dlp (also gets metadata) ───────────────────────────
+    if not te_raw:
+        try:
+            te_url, en_url, info = await _ytdlp_fetch(youtube_id)
+            title      = info.get("title")
+            channel    = info.get("uploader") or info.get("channel")
+            duration_s = info.get("duration")
+
+            if te_url:
+                cookies_file = os.environ.get("YTDLP_COOKIES_FILE", "").strip() or None
+                te_raw = await _download_subtitle(te_url, cookies_file, required=True)
+                if en_url:
+                    en_raw = await _download_subtitle(en_url, cookies_file, required=False)
+        except Exception as exc:
+            if not te_raw:
+                raise ValueError(
+                    f"Could not fetch captions for '{youtube_id}'. "
+                    f"Both youtube-transcript-api and yt-dlp failed: {exc}"
+                ) from exc
+
+    if not te_raw:
+        raise ValueError(
+            f"No Telugu captions found for video '{youtube_id}'. "
+            "Check that the video has Telugu auto-captions enabled on YouTube."
         )
 
-    te_url = _pick_json3(te_formats)
-    en_url = _pick_json3(en_formats)
+    # ── Merge bubble captions into sentences ──────────────────────────────
+    te_chunks = merge_into_sentences(te_raw, pause_threshold=1.2, max_chars=200)
+    en_chunks = merge_into_sentences(en_raw, pause_threshold=1.2, max_chars=300) if en_raw else []
 
-    # Telugu is required; English is optional (silent fail)
-    te_raw = await _download_subtitle(te_url, cookies_file, required=True)
+    en_lookup: list[tuple[float, str]] = [(c["start_time"], c["text"]) for c in en_chunks]
 
-    en_raw: list[dict] = []
-    if en_url:
-        en_raw = await _download_subtitle(en_url, cookies_file, required=False)
-
-    en_by_start: dict[float, str] = {s["start_time"]: s["text"] for s in en_raw}
-
-    def _closest_en(start: float) -> str | None:
-        if start in en_by_start:
-            return en_by_start[start]
-        for k, v in en_by_start.items():
-            if abs(k - start) <= 0.05:
-                return v
-        return None
+    def _find_en(te_start: float) -> str | None:
+        if not en_lookup:
+            return None
+        best_text, best_dist = None, float("inf")
+        for en_start, en_text in en_lookup:
+            dist = abs(en_start - te_start)
+            if dist < best_dist:
+                best_dist, best_text = dist, en_text
+        return best_text if best_dist <= 2.0 else None
 
     segments = [
         SegmentData(
-            start_time=s["start_time"],
-            duration=s["duration"],
-            te_original=s["text"],
-            en_auto=_closest_en(s["start_time"]),
+            start_time=chunk["start_time"],
+            duration=chunk["duration"],
+            te_original=chunk["text"],
+            en_auto=_find_en(chunk["start_time"]),
         )
-        for s in te_raw
+        for chunk in te_chunks
     ]
 
     return VideoData(

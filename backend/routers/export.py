@@ -1,8 +1,13 @@
 """
 Dataset export endpoints.
 
-GET /api/v1/export/jsonl?youtube_id={id}   — JSONL fine-tune dataset
-GET /api/v1/export/csv?youtube_id={id}     — CSV with all fields
+GET /api/v1/export/jsonl?youtube_id={id}&reviewed_only=false&format=raw
+GET /api/v1/export/csv?youtube_id={id}&reviewed_only=false
+
+format options (JSONL only):
+  raw     (default) {"te": "...", "en": "...", "source": "...", "t": 12.34}
+  alpaca  {"instruction": "...", "input": "...", "output": "..."}
+  openai  {"messages": [...]}
 
 Only exports segments where en_final is not null.
 """
@@ -22,6 +27,12 @@ from models import Segment, Video
 
 router = APIRouter(tags=["export"])
 
+INSTRUCTION = "Translate this Telugu Christian sermon text to English."
+SYSTEM_MSG = (
+    "You are a Telugu to English translator specializing in Christian theology. "
+    "Translate accurately and preserve theological terms."
+)
+
 
 async def _get_video_or_404(youtube_id: str, session: AsyncSession) -> Video:
     result = await session.execute(
@@ -33,20 +44,53 @@ async def _get_video_or_404(youtube_id: str, session: AsyncSession) -> Video:
     return video
 
 
+def _format_segment(seg: Segment, youtube_id: str, fmt: str) -> dict:
+    """Convert a segment to the requested fine-tune format."""
+    te = seg.te_original
+    en = seg.en_final or ""
+
+    if fmt == "alpaca":
+        return {
+            "instruction": INSTRUCTION,
+            "input": te,
+            "output": en,
+        }
+    elif fmt == "openai":
+        return {
+            "messages": [
+                {"role": "system", "content": SYSTEM_MSG},
+                {"role": "user", "content": te},
+                {"role": "assistant", "content": en},
+            ]
+        }
+    else:
+        # raw (default)
+        return {
+            "te": te,
+            "en": en,
+            "source": youtube_id,
+            "t": round(seg.start_time, 2),
+        }
+
+
 @router.get("/export/jsonl")
 async def export_jsonl(
     youtube_id: str = Query(..., description="YouTube video ID"),
     reviewed_only: bool = Query(False, description="Only export reviewed segments"),
+    format: str = Query("raw", description="Output format: raw | alpaca | openai"),
     session: AsyncSession = Depends(get_session),
 ) -> StreamingResponse:
     """
     Download a JSONL fine-tuning dataset for one video.
 
-    Each line is:
-      {"te": "...", "en": "...", "source": "youtube_id", "t": 12.34}
-
-    en = en_human if set, else en_auto.
+    Formats:
+    - raw (default): {"te": "...", "en": "...", "source": "...", "t": 12.34}
+    - alpaca: {"instruction": "...", "input": "...", "output": "..."}
+    - openai: {"messages": [{"role": "system", ...}, {"role": "user", ...}, {"role": "assistant", ...}]}
     """
+    if format not in ("raw", "alpaca", "openai"):
+        raise HTTPException(status_code=400, detail="format must be raw, alpaca, or openai.")
+
     video = await _get_video_or_404(youtube_id, session)
 
     query = select(Segment).where(
@@ -62,14 +106,15 @@ async def export_jsonl(
 
     def _generate():
         for seg in segments:
-            yield json.dumps({
-                "te": seg.te_original,
-                "en": seg.en_final,
-                "source": youtube_id,
-                "t": round(seg.start_time, 2),
-            }, ensure_ascii=False) + "\n"
+            yield json.dumps(
+                _format_segment(seg, youtube_id, format),
+                ensure_ascii=False
+            ) + "\n"
 
-    filename = f"{youtube_id}{'_reviewed' if reviewed_only else ''}.jsonl"
+    suffix = f"_{format}" if format != "raw" else ""
+    rev = "_reviewed" if reviewed_only else ""
+    filename = f"{youtube_id}{rev}{suffix}.jsonl"
+
     return StreamingResponse(
         _generate(),
         media_type="application/x-ndjson",

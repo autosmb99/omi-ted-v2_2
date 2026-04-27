@@ -1,13 +1,16 @@
-"""FastAPI entry point. Routers are mounted under /api/v1.
-
-Run locally:  uvicorn main:app --reload
-"""
+"""FastAPI entry point. Routers are mounted under /api/v1."""
 from __future__ import annotations
 
+import os
+from pathlib import Path
+
+from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from routers import health, ingest, videos, export
+load_dotenv(Path(__file__).parent / ".env")
+
+from routers import health, ingest, videos, export, batch, stats, settings_api, glossary
 
 app = FastAPI(
     title="OMI-TED v2",
@@ -15,14 +18,21 @@ app = FastAPI(
     version="0.1.0",
 )
 
+# Allow localhost dev + any Railway/Vercel deployment.
+# ALLOWED_ORIGINS env var = comma-separated list (set in Railway dashboard).
+_raw = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000")
+_origins = [o.strip() for o in _raw.split(",") if o.strip()]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=_origins,
+    allow_origin_regex=r"https://.*\.up\.railway\.app",
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 app.include_router(health.router)
-app.include_router(ingest.router, prefix="/api/v1/ingest", tags=["ingest"])
-app.include_router(videos.router, prefix="/api/v1", tags=["videos"])
-app.include_router(export.router, prefix="/api/v1", tags=["export"])
+app.include_router(ingest.router,       prefix="/api/v1/ingest", tags=["ingest"])
+app.include_router(videos.router,       prefix="/api/v1",        tags=["videos"])
+app.include_router(export.router,       prefix="/api/v1",        tags=["export"])
+app.include_router(batch.r

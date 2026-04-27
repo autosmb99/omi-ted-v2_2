@@ -2,20 +2,84 @@
 @tailwind components;
 @tailwind utilities;
 
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;1,9..40,400&family=Noto+Sans+Telugu:wght@400;500&family=JetBrains+Mono:wght@400;500&display=swap');
+
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --white:    #FFFFFF;
+  --gray-50:  #F9FAFB;
+  --gray-100: #F3F4F6;
+  --gray-200: #E5E7EB;
+  --gray-300: #D1D5DB;
+  --gray-400: #9CA3AF;
+  --gray-500: #6B7280;
+  --gray-600: #4B5563;
+  --gray-900: #111827;
+
+  --rose:        #F43F5E;
+  --rose-dark:   #E11D48;
+  --rose-light:  #FFF1F2;
+  --rose-border: #FECDD3;
+
+  --green:        #10B981;
+  --green-light:  #ECFDF5;
+  --green-border: #A7F3D0;
+
+  --amber:        #F59E0B;
+  --amber-light:  #FFFBEB;
+  --amber-border: #FDE68A;
+
+  --red:        #EF4444;
+  --red-light:  #FEF2F2;
+  --red-subtle: #FEF2F2;
+  --red-border: #FECACA;
+
+  --shadow-xs:   0 1px 2px rgba(0,0,0,0.05);
+  --shadow-sm:   0 1px 3px rgba(0,0,0,0.08), 0 1px 2px rgba(0,0,0,0.04);
+  --shadow-md:   0 4px 6px rgba(0,0,0,0.05), 0 2px 4px rgba(0,0,0,0.04);
+  --shadow-card: 0 1px 3px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04);
+
+  /* Legacy / alias vars so older component code keeps working */
+  --bg-base:        #FFFFFF;
+  --bg-surface:     #F9FAFB;
+  --bg-elevated:    #F3F4F6;
+  --bg-hover:       #F3F4F6;
+  --text-primary:   #111827;
+  --text-secondary: #6B7280;
+  --text-muted:     #9CA3AF;
+  --border:         #E5E7EB;
+  --border-mid:     #E5E7EB;
+  --accent:         #F43F5E;
+  --accent-dark:    #E11D48;
+  --accent-subtle:  #FFF1F2;
+  --accent-border:  #FECDD3;
+  --teal:           #10B981;
+  --teal-subtle:    #ECFDF5;
+  --teal-border:    #A7F3D0;
+  --amber-subtle:   #FFFBEB;
+  --ink:            #111827;
+  --ink-2:          #374151;
+  --ink-3:          #9CA3AF;
+  --ink-4:          #D1D5DB;
+  --cream:          #F9FAFB;
+  --warm-50:        #F9FAFB;
+  --warm-100:       #F3F4F6;
+  --warm-200:       #E5E7EB;
+  --gold:           #F43F5E;
+  --gold-light:     #FFF1F2;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
-}
-
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html { scroll-behavior: smooth; }
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: ui-sans-serif, system-ui, -apple-system, sans-serif;
+  background: var(--white);
+  color: var(--gray-900);
+  font-family: 'DM Sans', ui-sans-serif, system-ui, sans-serif;
+  font-size: 14px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
 }
+::-webkit-scrollbar { width: 5px; height: 5px; }
+::-webkit-scrollbar-track { background: var(--gray-100); }
+::-webkit-scrollbar-thumb { background: var(--gray-300); border-radius: 3px; }
+*:focus-visible { outline: 2px solid var(--rose); outline-offset: 2px; }
+::selection { background: var(--rose-light); }

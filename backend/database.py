@@ -10,7 +10,11 @@ from sqlalchemy.orm import DeclarativeBase
 
 load_dotenv()
 
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite+aiosqlite:///./dev.db")
+_raw_db_url = os.getenv("DATABASE_URL", "sqlite+aiosqlite:///./dev.db")
+# Railway sets postgresql://, SQLAlchemy asyncpg needs postgresql+asyncpg://
+if _raw_db_url.startswith("postgresql://"):
+    _raw_db_url = _raw_db_url.replace("postgresql://", "postgresql+asyncpg://", 1)
+DATABASE_URL = _raw_db_url
 
 # echo=False here; Alembic logs migrations separately.
 engine = create_async_engine(DATABASE_URL, echo=False, future=True)
