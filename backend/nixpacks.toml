@@ -1,8 +1,5 @@
-[variables]
-PYTHONPATH = "."
-
-[phases.build]
-cmds = ["pip install -r requirements.txt"]
-
+# DEPRECATED — Railway service uses DOCKERFILE builder (see railway.json).
+# This file kept only so old Railway services that still resolve nixpacks
+# don't 404. Safe to delete once Railway shows DOCKERFILE in build logs.
 [start]
-cmd = "uvicorn main:app --host 0.0.0.0 --port $PORT"
+cmd = "alembic upgrade head && uvicorn main:app --host 0.0.0.0 --port $PORT"

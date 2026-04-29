@@ -7,23 +7,64 @@ Priority order for fetching Telugu captions:
   3. Clear error to caller if both fail or no Telugu captions exist.
 
 Cookie file is optional (YTDLP_COOKIES_FILE env var) — ignored on Railway.
+
+Cloud-deploy hardening:
+  - YT_PROXY (or HTTPS_PROXY/HTTP_PROXY) env var routes youtube traffic
+    through a rotating proxy (Webshare, Bright Data, etc). Recommended on
+    Railway — Railway egress IPs occasionally hit YouTube 429/529.
+  - Automatic retry with jittered exponential backoff for 429/503/529 + net.
 """
 from __future__ import annotations
 
 import asyncio
 import os
+import random
 from dataclasses import dataclass, field
 from functools import partial
 
 import httpx
 import yt_dlp
 
+# Proxy: prefer YT_PROXY, fall back to HTTPS_PROXY/HTTP_PROXY.
+_PROXY: str | None = (
+    os.environ.get("YT_PROXY")
+    or os.environ.get("HTTPS_PROXY")
+    or os.environ.get("HTTP_PROXY")
+    or None
+)
+
+# Retry config for 429 / 503 / 529 / network failures
+_MAX_RETRIES = int(os.environ.get("YT_MAX_RETRIES", "4"))
+_BASE_BACKOFF = float(os.environ.get("YT_BASE_BACKOFF", "2.0"))  # seconds
+
 _YDL_OPTS: dict = {
     "skip_download": True,
     "quiet": True,
     "no_warnings": True,
     "ignore_no_formats_error": True,
+    "retries": _MAX_RETRIES,
+    "fragment_retries": _MAX_RETRIES,
+    "extractor_retries": _MAX_RETRIES,
+    "socket_timeout": 30,
 }
+if _PROXY:
+    _YDL_OPTS["proxy"] = _PROXY
+
+
+def _retryable(exc: Exception) -> bool:
+    """True if we should retry this error."""
+    msg = str(exc).lower()
+    if isinstance(exc, httpx.HTTPStatusError):
+        return exc.response.status_code in {408, 425, 429, 500, 502, 503, 504, 529}
+    if isinstance(exc, (httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError)):
+        return True
+    return any(s in msg for s in ("429", "503", "529", "timed out", "connection reset", "rate limit"))
+
+
+async def _backoff_sleep(attempt: int) -> None:
+    """Jittered exponential backoff between attempts."""
+    delay = _BASE_BACKOFF * (2 ** attempt) + random.uniform(0, 1.0)
+    await asyncio.sleep(min(delay, 30.0))
 
 
 @dataclass
@@ -206,17 +247,33 @@ async def _download_subtitle(url: str, cookies_file: str | None = None, required
         "Referer": "https://www.youtube.com/",
     }
     cookies = _load_cookies(cookies_file) if cookies_file else {}
-    try:
-        async with httpx.AsyncClient(
-            timeout=30, follow_redirects=True, headers=headers, cookies=cookies
-        ) as client:
-            resp = await client.get(url)
-            resp.raise_for_status()
-        return _parse_json3(resp.json())
-    except Exception:
-        if required:
-            raise
-        return []
+
+    client_kwargs: dict = {
+        "timeout": 30,
+        "follow_redirects": True,
+        "headers": headers,
+        "cookies": cookies,
+    }
+    if _PROXY:
+        # httpx >= 0.28 uses 'proxy' (singular)
+        client_kwargs["proxy"] = _PROXY
+
+    last_exc: Exception | None = None
+    for attempt in range(_MAX_RETRIES + 1):
+        try:
+            async with httpx.AsyncClient(**client_kwargs) as client:
+                resp = await client.get(url)
+                resp.raise_for_status()
+            return _parse_json3(resp.json())
+        except Exception as exc:
+            last_exc = exc
+            if attempt < _MAX_RETRIES and _retryable(exc):
+                await _backoff_sleep(attempt)
+                continue
+            break
+    if required and last_exc is not None:
+        raise last_exc
+    return []
 
 
 def _ydl_extract(youtube_id: str, cookies_file: str | None) -> dict:
@@ -232,10 +289,25 @@ async def _ytdlp_fetch(youtube_id: str) -> tuple[str | None, str | None, dict]:
     """
     Returns (te_url, en_url, info_dict) via yt-dlp.
     cookies_file is used if YTDLP_COOKIES_FILE is set, otherwise no cookies.
+    Retries with backoff on rate-limit / network errors.
     """
     cookies_file = os.environ.get("YTDLP_COOKIES_FILE", "").strip() or None
     loop = asyncio.get_running_loop()
-    info = await loop.run_in_executor(None, partial(_ydl_extract, youtube_id, cookies_file))
+
+    info: dict = {}
+    last_exc: Exception | None = None
+    for attempt in range(_MAX_RETRIES + 1):
+        try:
+            info = await loop.run_in_executor(
+                None, partial(_ydl_extract, youtube_id, cookies_file)
+            )
+            break
+        except Exception as exc:
+            last_exc = exc
+            if attempt < _MAX_RETRIES and _retryable(exc):
+                await _backoff_sleep(attempt)
+                continue
+            raise
 
     if not info:
         return None, None, {}

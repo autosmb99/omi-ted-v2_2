@@ -1,0 +1,15 @@
+venv/
+__pycache__/
+**/__pycache__/
+*.pyc
+.env
+dev.db
+dev.db-journal
+dev.db-shm
+dev.db-wal
+test_smoke.db
+test_smoke.db-journal
+.git
+.handoffs/
+cookies.txt
+*.log
