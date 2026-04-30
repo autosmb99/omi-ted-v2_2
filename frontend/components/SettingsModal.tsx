@@ -139,4 +139,24 @@ function KeyRow({ label, hint, isSet, value, onChange, placeholder, link }: {
           }}>
             {isSet ? "✓ SET" : "NOT SET"}
           </span>
-  
+        </div>
+        <a href={link} target="_blank" rel="noreferrer"
+          style={{ fontSize: 11, color: "var(--rose)", textDecoration: "none", fontWeight: 500 }}>
+          Get key ↗
+        </a>
+      </div>
+      <p style={{ fontSize: 11, color: "var(--gray-400)", margin: "0 0 8px" }}>{hint}</p>
+      <input type="password" value={value} onChange={(e) => onChange(e.target.value)}
+        placeholder={isSet ? "Enter new key to replace" : placeholder}
+        style={{
+          width: "100%", padding: "8px 10px", borderRadius: 7,
+          border: "1px solid var(--gray-200)", background: "var(--white)",
+          fontSize: 12, fontFamily: "JetBrains Mono, monospace",
+          color: "var(--gray-900)", outline: "none",
+        }}
+        onFocus={(e) => { e.target.style.borderColor = "var(--rose)"; e.target.style.boxShadow = "0 0 0 3px rgba(244,63,94,0.08)"; }}
+        onBlur={(e)  => { e.target.style.borderColor = "var(--gray-200)"; e.target.style.boxShadow = "none"; }}
+      />
+    </div>
+  );
+}

@@ -14,3 +14,8 @@ Local first. If `uvicorn main:app --reload` doesn't work on localhost, do not to
 
 ## End of session
 Fill `.handoffs/YYYYMMDD-NN-{kawin|rakshan}.md` from `HANDOFF-TEMPLATE.md`. Commit + push before closing Cowork.
+
+- This project runs on Linux (Dev Container)
+- Do NOT ask me to run manual commands — execute them yourself via terminal
+- Only interrupt me for: API keys, final deployment decisions
+- Use npm/pip/python directly without confirmation
