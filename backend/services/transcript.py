@@ -11,7 +11,7 @@ Cookie file is optional (YTDLP_COOKIES_FILE env var) — ignored on Railway.
 Cloud-deploy hardening:
   - YT_PROXY (or HTTPS_PROXY/HTTP_PROXY) env var routes youtube traffic
     through a rotating proxy (Webshare, Bright Data, etc). Recommended on
-    Railway — Railway's egress IPs occasionally hit YouTube 429/529.
+    Railway — Railway egress IPs occasionally hit YouTube 429/529.
   - Automatic retry with jittered exponential backoff for 429/503/529 + net.
 """
 from __future__ import annotations
