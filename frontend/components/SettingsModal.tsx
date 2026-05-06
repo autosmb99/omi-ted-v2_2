@@ -3,13 +3,21 @@ import { useEffect, useRef, useState } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import axios from "axios";
 
-interface KeyStatus { sarvam_key_set: boolean; openrouter_key_set: boolean; google_key_set: boolean; }
+interface KeyStatus {
+  sarvam_key_set: boolean;
+  openrouter_key_set: boolean;
+  google_key_set: boolean;
+  local_url_set: boolean;
+  local_key_set: boolean;
+}
 interface Props { open: boolean; onClose: () => void; }
 
 export default function SettingsModal({ open, onClose }: Props) {
   const [status, setStatus]         = useState<KeyStatus | null>(null);
   const [sarvam, setSarvam]         = useState("");
   const [openrouter, setOpenrouter] = useState("");
+  const [localUrl, setLocalUrl]     = useState("");
+  const [localKey, setLocalKey]     = useState("");
   const [saving, setSaving]         = useState(false);
   const [saved, setSaved]           = useState(false);
   const [error, setError]           = useState<string | null>(null);
@@ -35,9 +43,11 @@ export default function SettingsModal({ open, onClose }: Props) {
       const r = await axios.post<KeyStatus>("/api/v1/settings", {
         ...(sarvam.trim()     ? { sarvam_api_key:     sarvam.trim()     } : {}),
         ...(openrouter.trim() ? { openrouter_api_key: openrouter.trim() } : {}),
+        ...(localUrl.trim()   ? { local_llm_url:      localUrl.trim()   } : {}),
+        ...(localKey.trim()   ? { local_llm_key:      localKey.trim()   } : {}),
       });
       setStatus(r.data);
-      setSarvam(""); setOpenrouter("");
+      setSarvam(""); setOpenrouter(""); setLocalUrl(""); setLocalKey("");
       setSaved(true); setTimeout(() => setSaved(false), 2500);
     } catch (err: unknown) {
       const msg = axios.isAxiosError(err)
@@ -109,16 +119,28 @@ export default function SettingsModal({ open, onClose }: Props) {
                 value={sarvam} onChange={setSarvam}
                 placeholder="your-sarvam-key" link="https://dashboard.sarvam.ai"
               />
+              <KeyRow
+                label="Local LLM URL" hint="Ollama, vLLM, llama.cpp — base URL"
+                isSet={status?.local_url_set ?? false}
+                value={localUrl} onChange={setLocalUrl}
+                placeholder="http://localhost:11434/v1" link="https://ollama.com"
+              />
+              <KeyRow
+                label="Local LLM Key" hint="Optional API key for local endpoint"
+                isSet={status?.local_key_set ?? false}
+                value={localKey} onChange={setLocalKey}
+                placeholder="optional-key" link=""
+              />
 
               <motion.button onClick={handleSave}
-                disabled={saving || (!sarvam.trim() && !openrouter.trim())}
+                disabled={saving || (!sarvam.trim() && !openrouter.trim() && !localUrl.trim() && !localKey.trim())}
                 whileHover={{ scale: 1.01 }} whileTap={{ scale: 0.98 }}
                 style={{
                   marginTop: 4, padding: "10px 0", borderRadius: 10, border: "none",
                   cursor: "pointer", fontSize: 13, fontWeight: 600,
                   background: saved ? "var(--green-light)" : "var(--rose)",
                   color: saved ? "var(--green)" : "#fff",
-                  opacity: (!saving && (sarvam.trim() || openrouter.trim())) ? 1 : 0.4,
+                  opacity: (!saving && (sarvam.trim() || openrouter.trim() || localUrl.trim() || localKey.trim())) ? 1 : 0.4,
                   transition: "background 0.2s, color 0.2s",
                 }}>
                 {saving ? "Saving…" : saved ? "✓ Saved!" : "Save keys"}
@@ -162,10 +184,12 @@ function KeyRow({ label, hint, isSet, value, onChange, placeholder, link }: {
             {isSet ? "✓ SET" : "NOT SET"}
           </span>
         </div>
-        <a href={link} target="_blank" rel="noreferrer"
-          style={{ fontSize: 11, color: "var(--rose)", textDecoration: "none", fontWeight: 500 }}>
-          Get key ↗
-        </a>
+        {link && (
+          <a href={link} target="_blank" rel="noreferrer"
+            style={{ fontSize: 11, color: "var(--rose)", textDecoration: "none", fontWeight: 500 }}>
+            Get key ↗
+          </a>
+        )}
       </div>
       <p style={{ fontSize: 11, color: "var(--gray-400)", margin: "0 0 8px" }}>{hint}</p>
       <input type="password" value={value} onChange={(e) => onChange(e.target.value)}

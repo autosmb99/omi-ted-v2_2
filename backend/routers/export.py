@@ -1,13 +1,19 @@
 """
 Dataset export endpoints.
 
-GET /api/v1/export/jsonl?youtube_id={id}&reviewed_only=false&format=raw
+GET /api/v1/export/jsonl?youtube_id={id}&reviewed_only=false&format=raw&split=none
 GET /api/v1/export/csv?youtube_id={id}&reviewed_only=false
 
 format options (JSONL only):
   raw     (default) {"te": "...", "en": "...", "source": "...", "t": 12.34}
   alpaca  {"instruction": "...", "input": "...", "output": "..."}
   openai  {"messages": [...]}
+
+split options (JSONL only, no youtube_id required):
+  none    (default) — all segments in one file
+  train   — 80% random sample
+  val     — 10% random sample
+  test    — 10% random sample
 
 Only exports segments where en_final is not null.
 """
@@ -16,6 +22,7 @@ from __future__ import annotations
 import csv
 import io
 import json
+import random
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
@@ -75,45 +82,70 @@ def _format_segment(seg: Segment, youtube_id: str, fmt: str) -> dict:
 
 @router.get("/export/jsonl")
 async def export_jsonl(
-    youtube_id: str = Query(..., description="YouTube video ID"),
+    youtube_id: str | None = Query(None, description="YouTube video ID (omit for global export)"),
     reviewed_only: bool = Query(False, description="Only export reviewed segments"),
     format: str = Query("raw", description="Output format: raw | alpaca | openai"),
+    split: str = Query("none", description="Dataset split: none | train | val | test"),
     session: AsyncSession = Depends(get_session),
 ) -> StreamingResponse:
     """
-    Download a JSONL fine-tuning dataset for one video.
+    Download a JSONL fine-tuning dataset.
 
-    Formats:
-    - raw (default): {"te": "...", "en": "...", "source": "...", "t": 12.34}
-    - alpaca: {"instruction": "...", "input": "...", "output": "..."}
-    - openai: {"messages": [{"role": "system", ...}, {"role": "user", ...}, {"role": "assistant", ...}]}
+    - Omit youtube_id to export across all videos.
+    - Use split=train/val/test to get an 80/10/10 random split for ML training.
     """
     if format not in ("raw", "alpaca", "openai"):
         raise HTTPException(status_code=400, detail="format must be raw, alpaca, or openai.")
+    if split not in ("none", "train", "val", "test"):
+        raise HTTPException(status_code=400, detail="split must be none, train, val, or test.")
 
-    video = await _get_video_or_404(youtube_id, session)
-
-    query = select(Segment).where(
-        Segment.video_id == video.id,
-        Segment.en_final.isnot(None),
-    ).order_by(Segment.segment_index)
-
+    # Build base query
+    query = select(Segment).where(Segment.en_final.isnot(None))
     if reviewed_only:
         query = query.where(Segment.is_reviewed == True)  # noqa: E712
 
+    if youtube_id:
+        video = await _get_video_or_404(youtube_id, session)
+        query = query.where(Segment.video_id == video.id)
+
+    query = query.order_by(Segment.segment_index)
     result = await session.execute(query)
-    segments = result.scalars().all()
+    segments = list(result.scalars().all())
+
+    # Apply split
+    if split != "none":
+        # Deterministic shuffle with fixed seed for reproducibility
+        rng = random.Random(42)
+        rng.shuffle(segments)
+        n = len(segments)
+        if n == 0:
+            train_end = val_end = 0
+        else:
+            train_end = int(n * 0.8)
+            val_end = train_end + int(n * 0.1)
+        if split == "train":
+            segments = segments[:train_end]
+        elif split == "val":
+            segments = segments[train_end:val_end]
+        elif split == "test":
+            segments = segments[val_end:]
 
     def _generate():
         for seg in segments:
+            sid = youtube_id or "global"
             yield json.dumps(
-                _format_segment(seg, youtube_id, format),
+                _format_segment(seg, sid, format),
                 ensure_ascii=False
             ) + "\n"
 
-    suffix = f"_{format}" if format != "raw" else ""
-    rev = "_reviewed" if reviewed_only else ""
-    filename = f"{youtube_id}{rev}{suffix}.jsonl"
+    parts = [youtube_id or "global"]
+    if reviewed_only:
+        parts.append("reviewed")
+    if split != "none":
+        parts.append(split)
+    if format != "raw":
+        parts.append(format)
+    filename = "_".join(parts) + ".jsonl"
 
     return StreamingResponse(
         _generate(),
@@ -124,20 +156,18 @@ async def export_jsonl(
 
 @router.get("/export/csv")
 async def export_csv(
-    youtube_id: str = Query(..., description="YouTube video ID"),
+    youtube_id: str | None = Query(None, description="YouTube video ID (omit for global export)"),
     reviewed_only: bool = Query(False, description="Only export reviewed segments"),
     session: AsyncSession = Depends(get_session),
 ) -> StreamingResponse:
     """Download a CSV export with all segment fields."""
-    video = await _get_video_or_404(youtube_id, session)
-
-    query = select(Segment).where(
-        Segment.video_id == video.id,
-        Segment.en_final.isnot(None),
-    ).order_by(Segment.segment_index)
-
+    query = select(Segment).where(Segment.en_final.isnot(None))
     if reviewed_only:
         query = query.where(Segment.is_reviewed == True)  # noqa: E712
+    if youtube_id:
+        video = await _get_video_or_404(youtube_id, session)
+        query = query.where(Segment.video_id == video.id)
+    query = query.order_by(Segment.segment_index)
 
     result = await session.execute(query)
     segments = result.scalars().all()
@@ -162,7 +192,11 @@ async def export_csv(
             ])
             yield buf.getvalue()
 
-    filename = f"{youtube_id}{'_reviewed' if reviewed_only else ''}.csv"
+    parts = [youtube_id or "global"]
+    if reviewed_only:
+        parts.append("reviewed")
+    filename = "_".join(parts) + ".csv"
+
     return StreamingResponse(
         _generate(),
         media_type="text/csv",

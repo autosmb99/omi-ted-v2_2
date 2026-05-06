@@ -1,5 +1,5 @@
 """
-Settings endpoint — read/write API keys to backend/.env.
+Settings endpoint — read/write API keys and local LLM config to backend/.env.
 
 GET  /api/v1/settings  — returns which keys are set (masked, never exposes values)
 POST /api/v1/settings  — writes keys to backend/.env (empty string = clear key)
@@ -7,7 +7,6 @@ POST /api/v1/settings  — writes keys to backend/.env (empty string = clear key
 from __future__ import annotations
 
 import os
-import re
 from pathlib import Path
 
 from fastapi import APIRouter
@@ -17,7 +16,7 @@ router = APIRouter(tags=["settings"])
 
 ENV_PATH = Path(__file__).parent.parent / ".env"
 
-KNOWN_KEYS = ["SARVAM_API_KEY", "OPENROUTER_API_KEY", "GOOGLE_API_KEY"]
+KNOWN_KEYS = ["SARVAM_API_KEY", "OPENROUTER_API_KEY", "GOOGLE_API_KEY", "LOCAL_LLM_URL", "LOCAL_LLM_KEY"]
 
 
 def _read_env() -> dict[str, str]:
@@ -68,12 +67,16 @@ class SettingsResponse(BaseModel):
     sarvam_key_set: bool
     openrouter_key_set: bool
     google_key_set: bool
+    local_url_set: bool
+    local_key_set: bool
 
 
 class SettingsWrite(BaseModel):
     sarvam_api_key: str | None = None
     openrouter_api_key: str | None = None
     google_api_key: str | None = None
+    local_llm_url: str | None = None
+    local_llm_key: str | None = None
 
 
 @router.get("/settings", response_model=SettingsResponse)
@@ -84,6 +87,8 @@ async def get_settings() -> SettingsResponse:
         sarvam_key_set=bool(env.get("SARVAM_API_KEY", "").strip()),
         openrouter_key_set=bool(env.get("OPENROUTER_API_KEY", "").strip()),
         google_key_set=bool(env.get("GOOGLE_API_KEY", "").strip()),
+        local_url_set=bool(env.get("LOCAL_LLM_URL", "").strip()),
+        local_key_set=bool(env.get("LOCAL_LLM_KEY", "").strip()),
     )
 
 
@@ -97,6 +102,10 @@ async def save_settings(body: SettingsWrite) -> SettingsResponse:
         updates["OPENROUTER_API_KEY"] = body.openrouter_api_key.strip()
     if body.google_api_key is not None:
         updates["GOOGLE_API_KEY"] = body.google_api_key.strip()
+    if body.local_llm_url is not None:
+        updates["LOCAL_LLM_URL"] = body.local_llm_url.strip()
+    if body.local_llm_key is not None:
+        updates["LOCAL_LLM_KEY"] = body.local_llm_key.strip()
 
     _write_env(updates)
 

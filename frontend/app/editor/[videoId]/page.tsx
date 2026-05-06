@@ -1,10 +1,11 @@
 "use client";
-import { useState, useCallback, useEffect, useRef } from "react";
+import { useState, useCallback, useEffect, useRef, useMemo } from "react";
 import { useParams } from "next/navigation";
 import useSWR from "swr";
 import Link from "next/link";
 import axios from "axios";
 import { motion, AnimatePresence } from "motion/react";
+import { FixedSizeList } from "react-window";
 
 // ── Types ─────────────────────────────────────────────────────────────────
 
@@ -16,21 +17,11 @@ export interface Segment {
 interface SegmentsPage {
   total: number; page: number; page_size: number; total_pages: number; items: Segment[];
 }
-interface TranslateResult { translated: number; skipped: number; errors: number; message: string; }
-
-type Provider = "youtube" | "sarvam" | "openrouter";
-type EditorMode = "fulltext" | "sentences" | "finetune";
-
-const PRESETS = [
-  { id: "google/gemma-3-27b-it",                   label: "Gemma 3 · 27B" },
-  { id: "google/gemma-3-12b-it",                   label: "Gemma 3 · 12B" },
-  { id: "anthropic/claude-3-haiku",                label: "Claude 3 Haiku" },
-  { id: "meta-llama/llama-3.3-70b-instruct",       label: "Llama 3.3 · 70B" },
-  { id: "custom",                                  label: "Custom model…" },
-];
+interface TMResult { te_text: string; en_text: string; similarity: number; }
+interface TMResponse { query: string; results: TMResult[]; }
 
 const fetcher = (u: string) => axios.get(u).then(r => r.data);
-const PAGE_SIZE = 50;
+const ALL_PAGE_SIZE = 9999;
 
 function fmtTime(s: number) {
   const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = Math.floor(s % 60);
@@ -38,495 +29,608 @@ function fmtTime(s: number) {
   return `${m}:${sec.toString().padStart(2,"0")}`;
 }
 
-// ── Mode A: Full Text split-screen ────────────────────────────────────────
+// ── Components ────────────────────────────────────────────────────────────
 
-function FullTextMode({ videoId }: { videoId: string }) {
-  const { data, isLoading } = useSWR<SegmentsPage>(
-    `/api/v1/videos/${videoId}/segments?page=1&page_size=9999`, fetcher
-  );
-  const items = data?.items ?? [];
-
-  if (isLoading) return (
-    <div style={{ padding: "60px 0", textAlign: "center", color: "var(--gray-400)", fontSize: 13 }}>
-      Loading full transcript…
-    </div>
-  );
-
+/** Quality score dots: 1-5 clickable */
+function QualityDots({ score, onChange, disabled }: { score: number | null; onChange: (n: number) => void; disabled?: boolean }) {
   return (
-    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 0, height: "calc(100vh - 140px)", border: "1px solid var(--gray-200)", borderRadius: 12, overflow: "hidden" }}>
-      {/* Left: Telugu */}
-      <div style={{ padding: "24px 28px", overflowY: "auto", borderRight: "1px solid var(--gray-200)", background: "var(--white)" }}>
-        <p style={{ fontSize: 11, fontWeight: 600, color: "var(--rose)", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 16 }}>
-          తెలుగు — Telugu Source
-        </p>
-        <div style={{ fontFamily: "'Noto Sans Telugu', sans-serif", fontSize: 15, lineHeight: 2, color: "var(--gray-900)" }}>
-          {items.map((seg, i) => (
-            <span key={seg.id}>
-              <a href={`https://www.youtube.com/watch?v=${videoId}&t=${Math.floor(seg.start_time)}s`}
-                target="_blank" rel="noreferrer"
-                style={{ fontSize: 10, color: "var(--gray-300)", fontFamily: "JetBrains Mono", textDecoration: "none", marginRight: 4, verticalAlign: "middle" }}>
-                {fmtTime(seg.start_time)}
-              </a>
-              {seg.te_original}
-              {i < items.length - 1 ? " " : ""}
-            </span>
-          ))}
-        </div>
-      </div>
-      {/* Right: English */}
-      <div style={{ padding: "24px 28px", overflowY: "auto", background: "var(--gray-50)" }}>
-        <p style={{ fontSize: 11, fontWeight: 600, color: "var(--amber)", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 16 }}>
-          English — Auto Translation
-        </p>
-        <div style={{ fontSize: 14, lineHeight: 2, color: "var(--gray-700)" }}>
-          {items.map((seg, i) => (
-            <span key={seg.id}>
-              {seg.en_human || seg.en_auto || <em style={{ color: "var(--gray-300)" }}>[no translation]</em>}
-              {i < items.length - 1 ? " " : ""}
-            </span>
-          ))}
-        </div>
-        {items.every(s => !s.en_auto && !s.en_human) && (
-          <p style={{ fontSize: 13, color: "var(--gray-400)", marginTop: 32 }}>
-            No auto-translations yet. Use the Auto-translate button to generate them.
-          </p>
-        )}
-      </div>
+    <div style={{ display: "flex", gap: 3, alignItems: "center" }}>
+      {[1, 2, 3, 4, 5].map(n => (
+        <button
+          key={n}
+          disabled={disabled}
+          onClick={() => onChange(n)}
+          style={{
+            width: 10, height: 10, borderRadius: "50%", border: "none", cursor: disabled ? "default" : "pointer",
+            background: (score ?? 0) >= n ? "var(--amber)" : "var(--gray-300)",
+            transition: "background 0.15s", padding: 0,
+          }}
+        />
+      ))}
     </div>
   );
 }
 
-// ── Mode B: Sentence-parallel table ──────────────────────────────────────
+/** TM suggestion popup */
+function TMSuggestions({ query, onSelect }: { query: string; onSelect: (text: string) => void }) {
+  const { data } = useSWR<TMResponse>(query.length > 3 ? `/api/v1/tm/search?q=${encodeURIComponent(query)}` : null, fetcher);
+  if (!data || data.results.length === 0) return null;
+  return (
+    <div style={{
+      position: "absolute", zIndex: 50, bottom: "100%", left: 0, marginBottom: 6,
+      background: "var(--white)", border: "1px solid var(--gray-200)", borderRadius: 8,
+      boxShadow: "var(--shadow-md)", padding: "6px 0", minWidth: 220, maxWidth: 320,
+    }}>
+      <p style={{ fontSize: 10, color: "var(--gray-400)", padding: "0 10px", marginBottom: 4, textTransform: "uppercase", letterSpacing: "0.06em" }}>
+        Translation Memory
+      </p>
+      {data.results.map((r, i) => (
+        <button key={i} onClick={() => onSelect(r.en_text)}
+          style={{
+            display: "block", width: "100%", textAlign: "left", padding: "5px 10px",
+            border: "none", background: "transparent", cursor: "pointer", fontSize: 12,
+            color: "var(--gray-700)", borderBottom: i < data.results.length - 1 ? "1px solid var(--gray-100)" : "none",
+          }}
+          onMouseEnter={e => (e.currentTarget.style.background = "var(--gray-50)")}
+          onMouseLeave={e => (e.currentTarget.style.background = "transparent")}>
+          <span style={{ fontFamily: "'Noto Sans Telugu', sans-serif", color: "var(--gray-900)", fontSize: 13 }}>{r.te_text}</span>
+          <span style={{ color: "var(--gray-400)", margin: "0 6px" }}>→</span>
+          <span>{r.en_text}</span>
+          <span style={{ fontSize: 10, color: "var(--gray-400)", marginLeft: 6 }}>{Math.round(r.similarity * 100)}%</span>
+        </button>
+      ))}
+    </div>
+  );
+}
 
-function SentenceRow({ seg, youtubeId, onUpdate }: { seg: Segment; youtubeId: string; onUpdate: (id: number, u: Partial<Segment>) => void }) {
+/** Single virtualized row */
+function SegmentRow({ index, style, data }: { index: number; style: React.CSSProperties; data: RowData }) {
+  const seg = data.segments[index];
+  const isActive = data.activeId === seg.id;
   const [val, setVal] = useState(seg.en_human ?? "");
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [tmQuery, setTmQuery] = useState("");
   const ref = useRef<HTMLTextAreaElement>(null);
 
-  async function save() {
-    const trimmed = val.trim();
+  useEffect(() => { setVal(seg.en_human ?? ""); }, [seg.id, seg.en_human]);
+  useEffect(() => {
+    if (isActive && data.focusEnglish && ref.current) {
+      ref.current.focus();
+      data.focusEnglish = false;
+    }
+  }, [isActive, data.focusEnglish]);
+
+  async function save(newValue: string) {
+    const trimmed = newValue.trim();
     if (trimmed === (seg.en_human ?? "")) return;
     setSaving(true);
     try {
-      const { data } = await axios.patch(`/api/v1/segments/${seg.id}`, { en_human: trimmed, is_reviewed: trimmed.length > 0 });
-      onUpdate(seg.id, data);
-      setSaved(true); setTimeout(() => setSaved(false), 1800);
+      const { data: updated } = await axios.patch(`/api/v1/segments/${seg.id}`, {
+        en_human: trimmed, is_reviewed: trimmed.length > 0,
+      });
+      data.onUpdate(seg.id, updated);
+      setSaved(true); setTimeout(() => setSaved(false), 1500);
     } catch (e) { console.error(e); }
     finally { setSaving(false); }
   }
 
-  const isDone = !!seg.en_human;
+  async function setQuality(n: number) {
+    try {
+      const { data: updated } = await axios.patch(`/api/v1/segments/${seg.id}`, { quality_score: n });
+      data.onUpdate(seg.id, updated);
+    } catch (e) { console.error(e); }
+  }
+
+  async function toggleReviewed() {
+    try {
+      const { data: updated } = await axios.patch(`/api/v1/segments/${seg.id}`, { is_reviewed: !seg.is_reviewed });
+      data.onUpdate(seg.id, updated);
+    } catch (e) { console.error(e); }
+  }
+
+  async function setContentType(ct: string) {
+    try {
+      const { data: updated } = await axios.patch(`/api/v1/segments/${seg.id}`, { content_type: ct });
+      data.onUpdate(seg.id, updated);
+    } catch (e) { console.error(e); }
+  }
 
   return (
-    <tr style={{ borderBottom: "1px solid var(--gray-100)", background: isDone ? "rgba(16,185,129,0.02)" : "var(--white)" }}>
-      {/* Timestamp */}
-      <td style={{ padding: "12px 14px", verticalAlign: "top", whiteSpace: "nowrap", width: 70 }}>
-        <a href={`https://www.youtube.com/watch?v=${youtubeId}&t=${Math.floor(seg.start_time)}s`}
-          target="_blank" rel="noreferrer"
-          style={{ fontSize: 11, fontFamily: "JetBrains Mono", color: "var(--rose)", textDecoration: "none", fontWeight: 600 }}>
+    <div
+      style={{
+        ...style,
+        display: "flex", flexDirection: "column", padding: "10px 16px",
+        borderBottom: "1px solid var(--gray-200)",
+        background: isActive ? "var(--rose-light)" : seg.is_reviewed ? "rgba(16,185,129,0.03)" : "var(--white)",
+        borderLeft: isActive ? "3px solid var(--rose)" : "3px solid transparent",
+        transition: "background 0.12s",
+        cursor: "pointer",
+      }}
+      onClick={() => data.setActive(seg.id, seg.start_time)}
+      className="editor-row"
+    >
+      {/* Row header: time + controls */}
+      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6 }}>
+        <button
+          onClick={e => { e.stopPropagation(); data.seek(seg.start_time); }}
+          style={{
+            fontSize: 11, fontFamily: "JetBrains Mono", fontWeight: 600,
+            color: "var(--rose)", background: "none", border: "none", cursor: "pointer", padding: 0,
+          }}>
           {fmtTime(seg.start_time)}
-        </a>
-      </td>
-      {/* Telugu */}
-      <td style={{ padding: "12px 14px", verticalAlign: "top", width: "40%" }}>
-        <p style={{ fontFamily: "'Noto Sans Telugu', sans-serif", fontSize: 14, lineHeight: 1.8, color: "var(--gray-900)", margin: 0 }}>
+        </button>
+        <QualityDots score={seg.quality_score} onChange={setQuality} />
+        <button onClick={e => { e.stopPropagation(); toggleReviewed(); }}
+          style={{
+            fontSize: 10, fontWeight: 600, padding: "2px 8px", borderRadius: 99, border: "none", cursor: "pointer",
+            background: seg.is_reviewed ? "var(--green-light)" : "var(--gray-100)",
+            color: seg.is_reviewed ? "var(--green)" : "var(--gray-400)",
+          }}>
+          {seg.is_reviewed ? "✓ Reviewed" : "○ Review"}
+        </button>
+        <select
+          value={seg.content_type}
+          onClick={e => e.stopPropagation()}
+          onChange={e => setContentType(e.target.value)}
+          style={{
+            fontSize: 10, padding: "2px 6px", borderRadius: 6, border: "1px solid var(--gray-200)",
+            background: "var(--white)", color: "var(--gray-500)", outline: "none",
+          }}>
+          <option value="unknown">?</option>
+          <option value="sermon">Sermon</option>
+          <option value="song">Song</option>
+          <option value="prayer">Prayer</option>
+        </select>
+        <span style={{ fontSize: 10, color: "var(--gray-400)", marginLeft: "auto" }}>
+          #{seg.segment_index + 1}
+        </span>
+      </div>
+
+      {/* Text area: Telugu + English side by side */}
+      <div style={{ display: "flex", gap: 12, flex: 1, minHeight: 0 }}>
+        {/* Telugu */}
+        <div
+          style={{ flex: 1, fontFamily: "'Noto Sans Telugu', sans-serif", fontSize: 15, lineHeight: 1.8, color: "var(--gray-900)", overflow: "hidden" }}
+          onMouseUp={e => {
+            const sel = window.getSelection()?.toString().trim();
+            if (sel) data.onTextSelect(sel, e.clientX, e.clientY);
+          }}>
           {seg.te_original}
-        </p>
-      </td>
-      {/* English editable */}
-      <td style={{ padding: "10px 14px", verticalAlign: "top" }}>
-        <div style={{ position: "relative" }}>
-          <textarea ref={ref} value={val}
-            onChange={e => setVal(e.target.value)}
-            onBlur={save}
-            onKeyDown={e => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); ref.current?.blur(); } }}
-            rows={Math.max(2, Math.ceil(seg.te_original.length / 60))}
-            placeholder={seg.en_auto ? seg.en_auto : "Type translation…"}
+        </div>
+
+        {/* English editable */}
+        <div style={{ flex: 1, position: "relative" }}>
+          <textarea
+            ref={ref}
+            value={val}
+            onChange={e => { setVal(e.target.value); setTmQuery(e.target.value); }}
+            onBlur={() => save(val)}
+            onKeyDown={e => {
+              if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+                e.preventDefault();
+                ref.current?.blur();
+                data.saveAndNext?.();
+              }
+            }}
+            onClick={e => e.stopPropagation()}
+            rows={2}
+            placeholder={seg.en_auto || "Type translation…"}
             style={{
-              width: "100%", padding: "8px 10px", borderRadius: 8, resize: "vertical",
+              width: "100%", padding: "8px 10px", borderRadius: 8, resize: "none",
               fontSize: 13, lineHeight: 1.6, fontFamily: "DM Sans, sans-serif",
-              border: `1px solid ${isDone ? "var(--green-border)" : "var(--gray-200)"}`,
-              background: isDone ? "rgba(16,185,129,0.03)" : "var(--gray-50)",
+              border: `1px solid ${seg.is_reviewed ? "var(--green-border)" : "var(--gray-200)"}`,
+              background: seg.is_reviewed ? "rgba(16,185,129,0.03)" : "var(--gray-50)",
               color: "var(--gray-900)", outline: "none", transition: "border-color 0.15s",
             }}
-            onFocus={e => { e.target.style.borderColor = "var(--rose)"; e.target.style.boxShadow = "0 0 0 3px rgba(244,63,94,0.08)"; e.target.style.background = "var(--white)"; }}
-            onBlurCapture={e => { e.target.style.borderColor = isDone ? "var(--green-border)" : "var(--gray-200)"; e.target.style.boxShadow = "none"; e.target.style.background = isDone ? "rgba(16,185,129,0.03)" : "var(--gray-50)"; }}
+            onFocus={e => { e.target.style.borderColor = "var(--rose)"; e.target.style.boxShadow = "0 0 0 3px rgba(244,63,94,0.08)"; }}
+            onBlurCapture={e => { e.target.style.borderColor = seg.is_reviewed ? "var(--green-border)" : "var(--gray-200)"; e.target.style.boxShadow = "none"; }}
           />
-          {/* Auto hint shown below if not yet edited */}
-          {!isDone && seg.en_auto && (
-            <p style={{ fontSize: 11, color: "var(--gray-400)", margin: "4px 2px 0", fontStyle: "italic", lineHeight: 1.5 }}>
-              Auto: {seg.en_auto}
-            </p>
-          )}
+          {/* TM suggestions */}
+          {tmQuery.length > 5 && <TMSuggestions query={tmQuery} onSelect={t => { setVal(t); setTmQuery(""); }} />}
+          {/* Save indicator */}
           <div style={{ position: "absolute", top: 6, right: 8, fontSize: 11, pointerEvents: "none" }}>
             {saving && <span style={{ color: "var(--gray-400)" }}>…</span>}
             {saved && <motion.span style={{ color: "var(--green)" }} initial={{ opacity: 0, scale: 0.8 }} animate={{ opacity: 1, scale: 1 }}>✓</motion.span>}
           </div>
         </div>
-      </td>
-    </tr>
-  );
-}
-
-function SentencesMode({ videoId, page, setPage, data, isLoading, error, handleUpdate }: {
-  videoId: string; page: number; setPage: (fn: (p: number) => number) => void;
-  data: SegmentsPage | undefined; isLoading: boolean; error: unknown;
-  handleUpdate: (id: number, u: Partial<Segment>) => void;
-}) {
-  if (isLoading) return <div style={{ padding: "60px 0", textAlign: "center", color: "var(--gray-400)", fontSize: 13 }}>Loading segments…</div>;
-  if (error) return <div style={{ padding: "40px 0", textAlign: "center", color: "var(--red)", fontSize: 13 }}>Failed to load — is the backend running?</div>;
-
-  return (
-    <div style={{ background: "var(--white)", border: "1px solid var(--gray-200)", borderRadius: 12, overflow: "hidden" }}>
-      <table style={{ width: "100%", borderCollapse: "collapse" }}>
-        <thead>
-          <tr style={{ background: "var(--gray-50)", borderBottom: "1px solid var(--gray-200)" }}>
-            <th style={{ padding: "10px 14px", fontSize: 11, fontWeight: 600, color: "var(--gray-400)", textAlign: "left", textTransform: "uppercase", letterSpacing: "0.06em", width: 70 }}>Time</th>
-            <th style={{ padding: "10px 14px", fontSize: 11, fontWeight: 600, color: "var(--gray-400)", textAlign: "left", textTransform: "uppercase", letterSpacing: "0.06em", width: "40%" }}>తెలుగు</th>
-            <th style={{ padding: "10px 14px", fontSize: 11, fontWeight: 600, color: "var(--gray-400)", textAlign: "left", textTransform: "uppercase", letterSpacing: "0.06em" }}>English (your translation)</th>
-          </tr>
-        </thead>
-        <tbody>
-          {data?.items.map(seg => (
-            <SentenceRow key={seg.id} seg={seg} youtubeId={videoId} onUpdate={handleUpdate} />
-          ))}
-        </tbody>
-      </table>
-      {data && data.total_pages > 1 && (
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 12, padding: "14px 20px", borderTop: "1px solid var(--gray-100)" }}>
-          <button onClick={() => setPage(p => Math.max(1, p - 1))} disabled={page === 1}
-            style={{ padding: "6px 14px", borderRadius: 8, border: "1px solid var(--gray-200)", background: "var(--white)", color: "var(--gray-500)", fontSize: 12, cursor: "pointer" }}>
-            ← Prev
-          </button>
-          <span style={{ fontSize: 12, color: "var(--gray-400)", fontFamily: "JetBrains Mono" }}>{page} / {data.total_pages}</span>
-          <button onClick={() => setPage(p => Math.min(data.total_pages, p + 1))} disabled={page === data.total_pages}
-            style={{ padding: "6px 14px", borderRadius: 8, border: "1px solid var(--gray-200)", background: "var(--white)", color: "var(--gray-500)", fontSize: 12, cursor: "pointer" }}>
-            Next →
-          </button>
-        </div>
-      )}
+      </div>
     </div>
   );
 }
 
-// ── Mode C: Fine-tune cards ──────────────────────────────────────────────
-
-function FineTuneCard({ seg, youtubeId, onUpdate }: { seg: Segment; youtubeId: string; onUpdate: (id: number, u: Partial<Segment>) => void }) {
-  const [val, setVal] = useState(seg.en_human ?? seg.en_auto ?? "");
-  const [saving, setSaving] = useState(false);
-  const [saved, setSaved] = useState(false);
-  const ref = useRef<HTMLTextAreaElement>(null);
-
-  async function save() {
-    const trimmed = val.trim();
-    if (trimmed === (seg.en_human ?? "")) return;
-    setSaving(true);
-    try {
-      const { data } = await axios.patch(`/api/v1/segments/${seg.id}`, { en_human: trimmed, is_reviewed: trimmed.length > 0 });
-      onUpdate(seg.id, data);
-      setSaved(true); setTimeout(() => setSaved(false), 1800);
-    } catch (e) { console.error(e); }
-    finally { setSaving(false); }
-  }
-
-  return (
-    <motion.div layout
-      style={{
-        background: seg.is_reviewed ? "rgba(16,185,129,0.03)" : "var(--white)",
-        border: `1px solid ${seg.is_reviewed ? "var(--green-border)" : "var(--gray-200)"}`,
-        borderRadius: 12, padding: "16px 20px", display: "flex", flexDirection: "column", gap: 10,
-      }}
-      initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}
-      transition={{ type: "spring", stiffness: 380, damping: 28 }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-        <a href={`https://www.youtube.com/watch?v=${youtubeId}&t=${Math.floor(seg.start_time)}s`}
-          target="_blank" rel="noreferrer"
-          style={{ fontSize: 12, fontFamily: "JetBrains Mono", fontWeight: 600, color: "var(--rose)", textDecoration: "none" }}>
-          {fmtTime(seg.start_time)}
-        </a>
-        <span style={{ fontSize: 10, color: "var(--gray-400)" }}>·</span>
-        <span style={{ fontSize: 10, color: "var(--gray-400)" }}>{seg.duration.toFixed(1)}s</span>
-        {seg.is_reviewed && (
-          <span style={{ fontSize: 10, fontWeight: 600, color: "var(--green)", background: "var(--green-light)", border: "1px solid var(--green-border)", padding: "1px 6px", borderRadius: 10, marginLeft: "auto" }}>
-            ✓ done
-          </span>
-        )}
-      </div>
-      <p style={{ fontSize: 14, lineHeight: 1.7, color: "var(--gray-900)", fontFamily: "'Noto Sans Telugu', sans-serif", margin: 0 }}>
-        {seg.te_original}
-      </p>
-      {/* In fine-tune mode, auto-translation pre-fills the textarea for editing */}
-      <div style={{ position: "relative" }}>
-        <textarea ref={ref} value={val}
-          onChange={e => setVal(e.target.value)}
-          onBlur={save}
-          onKeyDown={e => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); ref.current?.blur(); } }}
-          rows={3}
-          placeholder="Edit the English translation…"
-          style={{
-            width: "100%", padding: "10px 12px", borderRadius: 8, resize: "vertical",
-            fontSize: 13, lineHeight: 1.6, fontFamily: "DM Sans, sans-serif",
-            border: "1px solid var(--gray-200)", background: "var(--gray-50)",
-            color: "var(--gray-900)", outline: "none", transition: "border-color 0.15s",
-          }}
-          onFocus={e => { e.target.style.borderColor = "var(--rose)"; e.target.style.boxShadow = "0 0 0 3px rgba(244,63,94,0.08)"; e.target.style.background = "var(--white)"; }}
-          onBlurCapture={e => { e.target.style.borderColor = "var(--gray-200)"; e.target.style.boxShadow = "none"; e.target.style.background = "var(--gray-50)"; }}
-        />
-        {seg.en_human && seg.en_auto && seg.en_human !== seg.en_auto && (
-          <p style={{ fontSize: 10, color: "var(--gray-400)", margin: "4px 2px 0", fontStyle: "italic" }}>
-            Original auto: {seg.en_auto}
-          </p>
-        )}
-        <div style={{ position: "absolute", top: 8, right: 10, fontSize: 11, pointerEvents: "none" }}>
-          {saving && <span style={{ color: "var(--gray-400)" }}>saving…</span>}
-          {saved && <motion.span style={{ color: "var(--green)" }} initial={{ opacity: 0, scale: 0.8 }} animate={{ opacity: 1, scale: 1 }}>✓</motion.span>}
-        </div>
-      </div>
-    </motion.div>
-  );
-}
-
-function FineTuneMode({ videoId, page, setPage, data, isLoading, error, handleUpdate }: {
-  videoId: string; page: number; setPage: (fn: (p: number) => number) => void;
-  data: SegmentsPage | undefined; isLoading: boolean; error: unknown;
-  handleUpdate: (id: number, u: Partial<Segment>) => void;
-}) {
-  if (isLoading) return <div style={{ padding: "60px 0", textAlign: "center", color: "var(--gray-400)", fontSize: 13 }}>Loading…</div>;
-  if (error) return <div style={{ padding: "40px 0", textAlign: "center", color: "var(--red)", fontSize: 13 }}>Failed to load — is the backend running?</div>;
-  return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-      {data?.items.map(seg => (
-        <FineTuneCard key={seg.id} seg={seg} youtubeId={videoId} onUpdate={handleUpdate} />
-      ))}
-      {data && data.total_pages > 1 && (
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 12, paddingTop: 8 }}>
-          <button onClick={() => setPage(p => Math.max(1, p - 1))} disabled={page === 1}
-            style={{ padding: "7px 18px", borderRadius: 8, border: "1px solid var(--gray-200)", background: "var(--white)", color: "var(--gray-500)", fontSize: 12, cursor: "pointer" }}>
-            ← Prev
-          </button>
-          <span style={{ fontSize: 12, color: "var(--gray-400)", fontFamily: "JetBrains Mono" }}>{page} / {data.total_pages}</span>
-          <button onClick={() => setPage(p => Math.min(data.total_pages, p + 1))} disabled={page === data.total_pages}
-            style={{ padding: "7px 18px", borderRadius: 8, border: "1px solid var(--gray-200)", background: "var(--white)", color: "var(--gray-500)", fontSize: 12, cursor: "pointer" }}>
-            Next →
-          </button>
-        </div>
-      )}
-    </div>
-  );
+interface RowData {
+  segments: Segment[];
+  activeId: number | null;
+  setActive: (id: number, time: number) => void;
+  onUpdate: (id: number, u: Partial<Segment>) => void;
+  seek: (t: number) => void;
+  onTextSelect: (text: string, x: number, y: number) => void;
+  focusEnglish: boolean;
+  saveAndNext?: () => void;
 }
 
 // ── Main Editor Page ──────────────────────────────────────────────────────
 
-const MODE_TABS: { id: EditorMode; label: string; desc: string }[] = [
-  { id: "fulltext",  label: "Full Text",     desc: "Read the whole sermon — Telugu left, English right" },
-  { id: "sentences", label: "Sentence View", desc: "Edit line by line with timestamps" },
-  { id: "finetune",  label: "Fine-tune",     desc: "Card-by-card editing for training data" },
-];
-
 export default function EditorPage() {
   const { videoId } = useParams() as { videoId: string };
-  const [mode, setMode] = useState<EditorMode>("sentences");
-  const [page, setPage] = useState(1);
-  const [provider, setProvider] = useState<Provider>("openrouter");
-  const [modelPreset, setModelPreset] = useState(PRESETS[0].id);
-  const [customModel, setCustomModel] = useState("");
-  const [translating, setTranslating] = useState(false);
-  const [txResult, setTxResult] = useState<TranslateResult | null>(null);
-  const [txError, setTxError] = useState<string | null>(null);
-  const [exportFormat, setExportFormat] = useState<"raw" | "alpaca" | "openai">("raw");
-  const [markingAll, setMarkingAll] = useState(false);
-  const [showAutoPanel, setShowAutoPanel] = useState(false);
-
-  useEffect(() => {
-    const p = localStorage.getItem("omi_provider") as Provider | null;
-    const m = localStorage.getItem("omi_model");
-    if (p) setProvider(p);
-    if (m) {
-      const pr = PRESETS.find(x => x.id === m);
-      if (pr) setModelPreset(m);
-      else { setModelPreset("custom"); setCustomModel(m); }
-    }
-  }, []);
-
-  const activeModel = modelPreset === "custom" ? customModel : modelPreset;
+  const [activeId, setActiveId] = useState<number | null>(null);
+  const [activeTime, setActiveTime] = useState(0);
+  const [focusEnglish, setFocusEnglish] = useState(false);
+  const [search, setSearch] = useState("");
+  const [filterReviewed, setFilterReviewed] = useState<boolean | null>(null);
+  const [filterType, setFilterType] = useState<string | null>(null);
+  const [selectedText, setSelectedText] = useState("");
+  const [selectPos, setSelectPos] = useState({ x: 0, y: 0 });
+  const [showGlossaryForm, setShowGlossaryForm] = useState(false);
+  const [glossaryEn, setGlossaryEn] = useState("");
+  const listRef = useRef<FixedSizeList>(null);
 
   const { data, error, isLoading, mutate } = useSWR<SegmentsPage>(
-    `/api/v1/videos/${videoId}/segments?page=${page}&page_size=${PAGE_SIZE}`, fetcher
+    `/api/v1/videos/${videoId}/segments?page=1&page_size=${ALL_PAGE_SIZE}`, fetcher
   );
+
+  const allSegments = data?.items ?? [];
+
+  const filtered = useMemo(() => {
+    return allSegments.filter(s => {
+      if (search) {
+        const q = search.toLowerCase();
+        if (!s.te_original.toLowerCase().includes(q) &&
+            !(s.en_auto ?? "").toLowerCase().includes(q) &&
+            !(s.en_human ?? "").toLowerCase().includes(q)) return false;
+      }
+      if (filterReviewed !== null && s.is_reviewed !== filterReviewed) return false;
+      if (filterType && s.content_type !== filterType) return false;
+      return true;
+    });
+  }, [allSegments, search, filterReviewed, filterType]);
 
   const handleUpdate = useCallback((id: number, updated: Partial<Segment>) => {
     mutate(prev => prev ? { ...prev, items: prev.items.map(s => s.id === id ? { ...s, ...updated } : s) } : prev, false);
   }, [mutate]);
 
-  const done      = data?.items.filter(s => s.en_human && s.en_human.trim()).length ?? 0;
-  const remaining = (data?.items.length ?? 0) - done;
-  const total     = data?.items.length ?? 0;
-  const allDone   = total > 0 && remaining === 0;
+  const seek = useCallback((t: number) => setActiveTime(t), []);
 
-  async function autoTranslate() {
-    setTranslating(true); setTxResult(null); setTxError(null);
+  const setActive = useCallback((id: number, time: number) => {
+    setActiveId(id);
+    setActiveTime(time);
+  }, []);
+
+  // Keyboard shortcuts
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLInputElement) {
+        if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+          // handled in textarea onKeyDown
+          return;
+        }
+        if (e.key === "Escape") {
+          (e.target as HTMLElement).blur();
+          return;
+        }
+        // Let other keys pass through when typing
+        if (!e.ctrlKey && !e.metaKey && e.key.length === 1) return;
+      }
+
+      if (e.key === "/") {
+        e.preventDefault();
+        document.getElementById("editor-search")?.focus();
+        return;
+      }
+      if (e.key === "j" || e.key === "k") {
+        e.preventDefault();
+        if (!filtered.length) return;
+        const idx = filtered.findIndex(s => s.id === activeId);
+        let nextIdx = e.key === "j" ? idx + 1 : idx - 1;
+        if (nextIdx < 0) nextIdx = 0;
+        if (nextIdx >= filtered.length) nextIdx = filtered.length - 1;
+        const nextSeg = filtered[nextIdx];
+        setActiveId(nextSeg.id);
+        setActiveTime(nextSeg.start_time);
+        listRef.current?.scrollToItem(nextIdx, "smart");
+        return;
+      }
+      if (e.key === "e") {
+        e.preventDefault();
+        setFocusEnglish(true);
+        return;
+      }
+      if (e.key >= "1" && e.key <= "5" && activeId !== null) {
+        e.preventDefault();
+        const score = parseInt(e.key, 10);
+        axios.patch(`/api/v1/segments/${activeId}`, { quality_score: score }).then(({ data: u }) => handleUpdate(activeId, u));
+        return;
+      }
+      if (e.key === "r" && activeId !== null) {
+        e.preventDefault();
+        const seg = allSegments.find(s => s.id === activeId);
+        if (seg) {
+          axios.patch(`/api/v1/segments/${activeId}`, { is_reviewed: !seg.is_reviewed }).then(({ data: u }) => handleUpdate(activeId, u));
+        }
+        return;
+      }
+      if (e.key === "s" && activeId !== null) {
+        e.preventDefault();
+        const seg = allSegments.find(s => s.id === activeId);
+        if (seg) {
+          const next = seg.content_type === "song" ? "unknown" : "song";
+          axios.patch(`/api/v1/segments/${activeId}`, { content_type: next }).then(({ data: u }) => handleUpdate(activeId, u));
+        }
+        return;
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [activeId, filtered, allSegments, handleUpdate]);
+
+  // Text selection handler
+  const onTextSelect = useCallback((text: string, x: number, y: number) => {
+    setSelectedText(text);
+    setSelectPos({ x, y });
+  }, []);
+
+  async function addToGlossary() {
+    if (!selectedText || !glossaryEn.trim()) return;
     try {
-      const { data: r } = await axios.post("/api/v1/batch/translate", {
-        youtube_id: videoId, provider, model: activeModel, force: false, concurrency: 5,
+      await axios.post("/api/v1/glossary", {
+        te_term: selectedText.trim(),
+        en_term: glossaryEn.trim(),
+        category: "theology",
       });
-      setTxResult(r); mutate();
-    } catch (err: unknown) {
-      const m = axios.isAxiosError(err) ? err.response?.data?.detail ?? err.message : String(err);
-      setTxError(typeof m === "string" ? m : JSON.stringify(m));
-    } finally { setTranslating(false); }
+      setShowGlossaryForm(false);
+      setGlossaryEn("");
+      setSelectedText("");
+    } catch (e) { console.error(e); }
   }
 
-  async function markPageReviewed() {
-    if (!data) return;
-    const un = data.items.filter(s => !s.is_reviewed);
-    if (!un.length) return;
-    setMarkingAll(true);
-    try {
-      await Promise.all(un.map(s =>
-        axios.patch(`/api/v1/segments/${s.id}`, { is_reviewed: true }).then(({ data: u }) => handleUpdate(s.id, u))
-      ));
-    } finally { setMarkingAll(false); }
+  function downloadText() {
+    const lines = filtered.map(s =>
+      `[${fmtTime(s.start_time)}] ${s.te_original}\n→ ${s.en_human || s.en_auto || "[untranslated]"}\n`
+    );
+    const blob = new Blob([lines.join("\n")], { type: "text/plain" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${videoId}_segments.txt`;
+    a.click();
+    URL.revokeObjectURL(url);
   }
+
+  function downloadJSONL() {
+    const lines = filtered.map(s => JSON.stringify({
+      te: s.te_original,
+      en: s.en_human || s.en_auto,
+      source: videoId,
+      t: s.start_time,
+    }));
+    const blob = new Blob([lines.join("\n")], { type: "application/x-ndjson" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${videoId}.jsonl`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  const reviewedCount = allSegments.filter(s => s.is_reviewed).length;
+  const totalCount = allSegments.length;
+
+  const rowData: RowData = {
+    segments: filtered,
+    activeId,
+    setActive,
+    onUpdate: handleUpdate,
+    seek,
+    onTextSelect,
+    focusEnglish,
+    saveAndNext: () => {
+      const idx = filtered.findIndex(s => s.id === activeId);
+      if (idx >= 0 && idx < filtered.length - 1) {
+        const next = filtered[idx + 1];
+        setActiveId(next.id);
+        setActiveTime(next.start_time);
+        setFocusEnglish(true);
+        listRef.current?.scrollToItem(idx + 1, "smart");
+      }
+    },
+  };
+
+  const listHeight = typeof window !== "undefined" ? window.innerHeight - 380 : 600;
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 0 }}>
+    <div style={{ display: "flex", flexDirection: "column", gap: 16, height: "calc(100vh - 56px)", marginTop: -12 }}>
 
-      {/* ── Top bar: back link + mode tabs + compact auto-translate ── */}
-      <div style={{
-        display: "flex", alignItems: "center", gap: 16,
-        paddingBottom: 16, borderBottom: "1px solid var(--gray-100)", marginBottom: 20,
-        flexWrap: "wrap",
-      }}>
-        <Link href="/queue" style={{ fontSize: 12, color: "var(--gray-400)", textDecoration: "none", whiteSpace: "nowrap" }}>
-          ← Queue
-        </Link>
+      {/* ── Top bar ── */}
+      <div style={{ display: "flex", alignItems: "center", gap: 16, flexWrap: "wrap", paddingBottom: 12, borderBottom: "1px solid var(--gray-200)" }}>
+        <Link href="/queue" style={{ fontSize: 12, color: "var(--gray-400)", textDecoration: "none", whiteSpace: "nowrap" }}>← Queue</Link>
+        <h1 style={{ fontSize: 16, fontWeight: 600, color: "var(--gray-900)", flex: 1, minWidth: 200, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+          {videoId}
+        </h1>
+        <span style={{ fontSize: 11, fontFamily: "JetBrains Mono", color: reviewedCount === totalCount ? "var(--green)" : "var(--gray-400)", background: reviewedCount === totalCount ? "var(--green-light)" : "var(--gray-100)", border: `1px solid ${reviewedCount === totalCount ? "var(--green-border)" : "var(--gray-200)"}`, padding: "4px 10px", borderRadius: 99 }}>
+          {reviewedCount}/{totalCount} done
+        </span>
+      </div>
 
-        {/* Mode tabs */}
-        <div style={{ display: "flex", gap: 4, flex: 1, flexWrap: "wrap" }}>
-          {MODE_TABS.map(tab => (
-            <button key={tab.id} onClick={() => { setMode(tab.id); setPage(1); }}
-              title={tab.desc}
-              style={{
-                padding: "6px 14px", borderRadius: 8, border: "none", cursor: "pointer", fontSize: 12,
-                fontWeight: mode === tab.id ? 600 : 400,
-                background: mode === tab.id ? "var(--rose)" : "var(--gray-100)",
-                color: mode === tab.id ? "#fff" : "var(--gray-500)",
-                transition: "all 0.15s",
-              }}>
-              {tab.label}
-            </button>
-          ))}
+      {/* ── YouTube + Controls ── */}
+      <div style={{ display: "flex", gap: 16, flexWrap: "wrap" }}>
+        {/* YouTube player */}
+        <div style={{ flexShrink: 0 }}>
+          <iframe
+            key={Math.floor(activeTime)}
+            src={`https://www.youtube.com/embed/${videoId}?start=${Math.floor(activeTime)}&autoplay=0&rel=0`}
+            width={360} height={202}
+            style={{ borderRadius: 10, border: "1px solid var(--gray-200)", display: "block" }}
+            allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+            allowFullScreen
+          />
         </div>
 
-        {/* Progress pill */}
-        {data && mode !== "fulltext" && (
-          <span style={{
-            fontSize: 11, fontFamily: "JetBrains Mono",
-            color: allDone ? "var(--green)" : "var(--gray-400)",
-            background: allDone ? "var(--green-light)" : "var(--gray-100)",
-            border: `1px solid ${allDone ? "var(--green-border)" : "var(--gray-200)"}`,
-            padding: "4px 10px", borderRadius: 99, whiteSpace: "nowrap",
-          }}>
-            {done}/{total} done
-          </span>
-        )}
-
-        {/* Compact auto-translate */}
-        <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
-          <select value={provider}
-            onChange={e => { setProvider(e.target.value as Provider); localStorage.setItem("omi_provider", e.target.value); }}
-            style={{ padding: "5px 8px", borderRadius: 7, border: "1px solid var(--gray-200)", fontSize: 11, color: "var(--gray-600)", background: "var(--white)", outline: "none" }}>
-            <option value="youtube">YouTube (free)</option>
-            <option value="sarvam">Sarvam AI</option>
-            <option value="openrouter">OpenRouter</option>
-          </select>
-          {provider === "openrouter" && (
-            <select value={modelPreset}
-              onChange={e => { setModelPreset(e.target.value); localStorage.setItem("omi_model", e.target.value); }}
-              style={{ padding: "5px 8px", borderRadius: 7, border: "1px solid var(--gray-200)", fontSize: 11, color: "var(--gray-600)", background: "var(--white)", outline: "none" }}>
-              {PRESETS.map(m => <option key={m.id} value={m.id}>{m.label}</option>)}
+        {/* Controls */}
+        <div style={{ flex: 1, minWidth: 280, display: "flex", flexDirection: "column", gap: 10 }}>
+          {/* Search */}
+          <div style={{ display: "flex", gap: 8 }}>
+            <input
+              id="editor-search"
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+              placeholder="Search segments…  ( / to focus )"
+              style={{
+                flex: 1, padding: "7px 12px", borderRadius: 8, border: "1px solid var(--gray-200)",
+                fontSize: 13, color: "var(--gray-700)", background: "var(--white)", outline: "none",
+              }}
+            />
+            <select
+              value={filterReviewed === null ? "" : filterReviewed ? "yes" : "no"}
+              onChange={e => {
+                const v = e.target.value;
+                setFilterReviewed(v === "" ? null : v === "yes");
+              }}
+              style={{ padding: "7px 10px", borderRadius: 8, border: "1px solid var(--gray-200)", fontSize: 12, color: "var(--gray-600)", background: "var(--white)", outline: "none" }}>
+              <option value="">All status</option>
+              <option value="yes">Reviewed</option>
+              <option value="no">Unreviewed</option>
             </select>
-          )}
-          {provider === "openrouter" && modelPreset === "custom" && (
-            <input type="text" value={customModel}
-              onChange={e => { setCustomModel(e.target.value); localStorage.setItem("omi_model", e.target.value); }}
-              placeholder="org/model"
-              style={{ padding: "5px 8px", borderRadius: 7, border: "1px solid var(--rose-border)", fontSize: 11, fontFamily: "JetBrains Mono", color: "var(--gray-900)", outline: "none", width: 140 }} />
-          )}
-          <motion.button onClick={autoTranslate} disabled={translating}
-            whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.97 }}
-            style={{
-              padding: "5px 14px", borderRadius: 7, border: "none", fontSize: 11, fontWeight: 600,
-              background: "var(--rose)", color: "#fff", cursor: "pointer", opacity: translating ? 0.5 : 1,
-              whiteSpace: "nowrap",
-            }}>
-            {translating ? "Translating…" : "✦ Auto-translate"}
-          </motion.button>
+            <select
+              value={filterType ?? ""}
+              onChange={e => setFilterType(e.target.value || null)}
+              style={{ padding: "7px 10px", borderRadius: 8, border: "1px solid var(--gray-200)", fontSize: 12, color: "var(--gray-600)", background: "var(--white)", outline: "none" }}>
+              <option value="">All types</option>
+              <option value="sermon">Sermon</option>
+              <option value="song">Song</option>
+              <option value="prayer">Prayer</option>
+              <option value="unknown">Unknown</option>
+            </select>
+          </div>
+
+          {/* Filtered count + download */}
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <span style={{ fontSize: 12, color: "var(--gray-400)" }}>
+              Showing {filtered.length} of {allSegments.length} segments
+            </span>
+            <div style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
+              <button onClick={downloadText}
+                style={{ padding: "5px 12px", borderRadius: 7, border: "1px solid var(--gray-200)", background: "var(--white)", color: "var(--gray-600)", fontSize: 11, cursor: "pointer" }}>
+                ↓ Text
+              </button>
+              <button onClick={downloadJSONL}
+                style={{ padding: "5px 12px", borderRadius: 7, border: "1px solid var(--gray-200)", background: "var(--white)", color: "var(--gray-600)", fontSize: 11, cursor: "pointer" }}>
+                ↓ JSONL
+              </button>
+            </div>
+          </div>
+
+          {/* Shortcuts legend */}
+          <div style={{ display: "flex", flexWrap: "wrap", gap: "4px 12px", fontSize: 10, color: "var(--gray-400)", marginTop: 2 }}>
+            <span><kbd style={{ background: "var(--gray-100)", padding: "1px 4px", borderRadius: 4, fontFamily: "JetBrains Mono" }}>j/k</kbd> navigate</span>
+            <span><kbd style={{ background: "var(--gray-100)", padding: "1px 4px", borderRadius: 4, fontFamily: "JetBrains Mono" }}>e</kbd> edit</span>
+            <span><kbd style={{ background: "var(--gray-100)", padding: "1px 4px", borderRadius: 4, fontFamily: "JetBrains Mono" }}>ctrl↵</kbd> save+next</span>
+            <span><kbd style={{ background: "var(--gray-100)", padding: "1px 4px", borderRadius: 4, fontFamily: "JetBrains Mono" }}>1-5</kbd> quality</span>
+            <span><kbd style={{ background: "var(--gray-100)", padding: "1px 4px", borderRadius: 4, fontFamily: "JetBrains Mono" }}>r</kbd> review</span>
+            <span><kbd style={{ background: "var(--gray-100)", padding: "1px 4px", borderRadius: 4, fontFamily: "JetBrains Mono" }}>s</kbd> song</span>
+          </div>
         </div>
       </div>
 
-      {/* Translate result banner */}
+      {/* ── Virtualized list ── */}
+      {isLoading && <p style={{ color: "var(--gray-400)", fontSize: 13, textAlign: "center", padding: "60px 0" }}>Loading segments…</p>}
+      {error && <p style={{ color: "var(--red)", fontSize: 13, textAlign: "center", padding: "40px 0" }}>Failed to load — is the backend running?</p>}
+      {!isLoading && filtered.length === 0 && (
+        <div style={{ textAlign: "center", padding: "60px 0", color: "var(--gray-400)", fontSize: 14 }}>
+          No segments match your filters.
+        </div>
+      )}
+      {!isLoading && filtered.length > 0 && (
+        <div style={{ flex: 1, minHeight: 0, border: "1px solid var(--gray-200)", borderRadius: 12, overflow: "hidden", background: "var(--white)" }}>
+          <FixedSizeList
+            ref={listRef}
+            height={listHeight}
+            itemCount={filtered.length}
+            itemSize={150}
+            width="100%"
+            itemData={rowData}
+          >
+            {SegmentRow}
+          </FixedSizeList>
+        </div>
+      )}
+
+      {/* ── Selection popup ── */}
       <AnimatePresence>
-        {txResult && (
-          <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }} exit={{ opacity: 0, height: 0 }}
-            style={{ padding: "8px 14px", borderRadius: 8, background: "var(--green-light)", border: "1px solid var(--green-border)", fontSize: 12, color: "var(--green)", marginBottom: 12 }}>
-            ✓ {txResult.message}
-          </motion.div>
-        )}
-        {txError && (
-          <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }} exit={{ opacity: 0, height: 0 }}
-            style={{ padding: "8px 14px", borderRadius: 8, background: "#fef2f2", border: "1px solid #fecaca", fontSize: 12, color: "var(--red)", marginBottom: 12 }}>
-            ✗ {txError}
+        {selectedText && !showGlossaryForm && (
+          <motion.div
+            initial={{ opacity: 0, y: 6, scale: 0.95 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: 6, scale: 0.95 }}
+            style={{
+              position: "fixed", left: selectPos.x, top: selectPos.y - 40, zIndex: 100,
+              background: "var(--rose)", color: "#fff", padding: "6px 12px", borderRadius: 8,
+              fontSize: 12, fontWeight: 600, boxShadow: "var(--shadow-md)", cursor: "pointer",
+              display: "flex", alignItems: "center", gap: 8,
+            }}
+            onClick={() => setShowGlossaryForm(true)}>
+            + Add “{selectedText.slice(0, 20)}{selectedText.length > 20 ? "…" : ""}” to glossary
           </motion.div>
         )}
       </AnimatePresence>
 
-      {/* ── Mode content ── */}
-      {mode === "fulltext" && <FullTextMode videoId={videoId} />}
-      {mode === "sentences" && (
-        <SentencesMode videoId={videoId} page={page} setPage={setPage}
-          data={data} isLoading={isLoading} error={error} handleUpdate={handleUpdate} />
-      )}
-      {mode === "finetune" && (
-        <FineTuneMode videoId={videoId} page={page} setPage={setPage}
-          data={data} isLoading={isLoading} error={error} handleUpdate={handleUpdate} />
-      )}
-
-      {/* ── Bottom bar: export + mark reviewed (sentence + finetune only) ── */}
-      {mode !== "fulltext" && (
-        <div style={{
-          display: "flex", alignItems: "center", gap: 12, marginTop: 20,
-          paddingTop: 16, borderTop: "1px solid var(--gray-100)", flexWrap: "wrap",
-        }}>
-          <span style={{ fontSize: 12, color: "var(--gray-400)", flex: 1 }}>
-            Ctrl+Enter or click away to save each edit.
-          </span>
-          {data && !allDone && (
-            <motion.button onClick={markPageReviewed} disabled={markingAll}
-              whileHover={{ scale: 1.01 }} whileTap={{ scale: 0.98 }}
-              style={{ padding: "7px 16px", borderRadius: 8, border: "1px solid var(--amber-border)", background: "var(--amber-light)", color: "var(--amber)", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
-              {markingAll ? "Marking…" : "✓ Mark page done"}
-            </motion.button>
-          )}
-          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-            <select value={exportFormat} onChange={e => setExportFormat(e.target.value as typeof exportFormat)}
-              style={{ padding: "6px 8px", borderRadius: 8, border: "1px solid var(--gray-200)", fontSize: 11, color: "var(--gray-500)", background: "var(--white)", outline: "none" }}>
-              <option value="raw">Raw pairs</option>
-              <option value="alpaca">Alpaca</option>
-              <option value="openai">OpenAI</option>
-            </select>
-            <a href={`/api/v1/export/jsonl?youtube_id=${videoId}&reviewed_only=true&format=${exportFormat}`}
-              style={{ padding: "6px 14px", borderRadius: 8, border: "1px solid var(--green-border)", background: "var(--green-light)", color: "var(--green)", fontSize: 12, fontWeight: 600, textDecoration: "none" }}>
-              ↓ Export Gold
-            </a>
-            <a href={`/api/v1/export/jsonl?youtube_id=${videoId}&format=${exportFormat}`}
-              style={{ padding: "6px 14px", borderRadius: 8, border: "1px solid var(--gray-200)", background: "var(--white)", color: "var(--gray-500)", fontSize: 12, textDecoration: "none" }}>
-              ↓ Export all
-            </a>
-          </div>
-        </div>
-      )}
+      {/* ── Glossary form modal ── */}
+      <AnimatePresence>
+        {showGlossaryForm && (
+          <motion.div
+            initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+            style={{
+              position: "fixed", inset: 0, zIndex: 200,
+              display: "flex", alignItems: "center", justifyContent: "center",
+              background: "rgba(17,24,39,0.35)", backdropFilter: "blur(4px)",
+            }}
+            onClick={() => setShowGlossaryForm(false)}>
+            <motion.div
+              initial={{ opacity: 0, y: 14, scale: 0.97 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: 8, scale: 0.98 }}
+              onClick={e => e.stopPropagation()}
+              style={{
+                width: "100%", maxWidth: 400,
+                background: "var(--white)", borderRadius: 16,
+                boxShadow: "0 20px 60px rgba(0,0,0,0.12)", padding: 24,
+                border: "1px solid var(--gray-200)",
+              }}>
+              <h3 style={{ fontSize: 16, fontWeight: 600, color: "var(--gray-900)", marginBottom: 12 }}>Add to Glossary</h3>
+              <div style={{ marginBottom: 12 }}>
+                <label style={{ fontSize: 11, color: "var(--gray-500)", display: "block", marginBottom: 4 }}>Telugu term</label>
+                <div style={{ fontFamily: "'Noto Sans Telugu', sans-serif", fontSize: 15, padding: "8px 10px", borderRadius: 8, background: "var(--gray-50)", border: "1px solid var(--gray-200)", color: "var(--gray-900)" }}>
+                  {selectedText}
+                </div>
+              </div>
+              <div style={{ marginBottom: 16 }}>
+                <label style={{ fontSize: 11, color: "var(--gray-500)", display: "block", marginBottom: 4 }}>English translation *</label>
+                <input
+                  value={glossaryEn}
+                  onChange={e => setGlossaryEn(e.target.value)}
+                  placeholder="e.g. Lord"
+                  autoFocus
+                  style={{
+                    width: "100%", padding: "8px 10px", borderRadius: 8, border: "1px solid var(--gray-200)",
+                    fontSize: 13, color: "var(--gray-900)", outline: "none",
+                  }}
+                  onKeyDown={e => { if (e.key === "Enter") addToGlossary(); }}
+                />
+              </div>
+              <div style={{ display: "flex", gap: 8 }}>
+                <button onClick={addToGlossary}
+                  style={{ padding: "8px 18px", borderRadius: 8, border: "none", background: "var(--rose)", color: "#fff", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>
+                  Add term
+                </button>
+                <button onClick={() => setShowGlossaryForm(false)}
+                  style={{ padding: "8px 14px", borderRadius: 8, border: "1px solid var(--gray-200)", background: "var(--white)", color: "var(--gray-500)", fontSize: 13, cursor: "pointer" }}>
+                  Cancel
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }

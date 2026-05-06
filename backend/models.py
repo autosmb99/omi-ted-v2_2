@@ -85,3 +85,26 @@ class GlossaryTerm(Base):
     # category: theology | name | place | general
     category: Mapped[str] = mapped_column(String(20), default="general", nullable=False, index=True)
     notes: Mapped[str | None] = mapped_column(Text)
+
+
+class TranslationMemory(Base):
+    __tablename__ = "translation_memory"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    te_text: Mapped[str] = mapped_column(Text, nullable=False, index=True)
+    en_text: Mapped[str] = mapped_column(Text, nullable=False)
+    source_video_id: Mapped[int | None] = mapped_column(ForeignKey("videos.id", ondelete="SET NULL"))
+    source_segment_id: Mapped[int | None] = mapped_column(ForeignKey("segments.id", ondelete="SET NULL"))
+    usage_count: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), nullable=False)
+
+
+class SegmentRevision(Base):
+    __tablename__ = "segment_revisions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    segment_id: Mapped[int] = mapped_column(ForeignKey("segments.id", ondelete="CASCADE"), index=True, nullable=False)
+    en_human_before: Mapped[str | None] = mapped_column(Text)
+    en_human_after: Mapped[str] = mapped_column(Text, nullable=False)
+    editor_name: Mapped[str | None] = mapped_column(String(100))
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), nullable=False)

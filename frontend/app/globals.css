@@ -2,7 +2,7 @@
 @tailwind components;
 @tailwind utilities;
 
-@import url('https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;1,9..40,400&family=Noto+Sans+Telugu:wght@400;500&family=JetBrains+Mono:wght@400;500&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;1,9..40,400&family=Noto+Sans+Telugu:wght@400;500;700&family=JetBrains+Mono:wght@400;500&display=swap');
 
 :root {
   --white:    #FFFFFF;
@@ -68,6 +68,69 @@
   --gold-light:     #FFF1F2;
 }
 
+/* ── Dark mode ── */
+[data-theme="dark"] {
+  --white:    #0F1117;
+  --gray-50:  #13151F;
+  --gray-100: #1A1D2B;
+  --gray-200: #252A3D;
+  --gray-300: #3E455E;
+  --gray-400: #6B7293;
+  --gray-500: #8B92B4;
+  --gray-600: #A5ABCF;
+  --gray-900: #E8EAF6;
+
+  --rose:        #FB7185;
+  --rose-dark:   #F43F5E;
+  --rose-light:  rgba(244,63,94,0.12);
+  --rose-border: rgba(244,63,94,0.35);
+
+  --green:        #34D399;
+  --green-light:  rgba(16,185,129,0.12);
+  --green-border: rgba(16,185,129,0.35);
+
+  --amber:        #FBBF24;
+  --amber-light:  rgba(245,158,11,0.12);
+  --amber-border: rgba(245,158,11,0.35);
+
+  --red:        #F87171;
+  --red-light:  rgba(239,68,68,0.12);
+  --red-border: rgba(239,68,68,0.35);
+
+  --shadow-xs:   0 1px 2px rgba(0,0,0,0.25);
+  --shadow-sm:   0 1px 3px rgba(0,0,0,0.35), 0 1px 2px rgba(0,0,0,0.25);
+  --shadow-md:   0 4px 6px rgba(0,0,0,0.35), 0 2px 4px rgba(0,0,0,0.25);
+  --shadow-card: 0 1px 3px rgba(0,0,0,0.30), 0 1px 2px rgba(0,0,0,0.20);
+
+  --bg-base:        #0F1117;
+  --bg-surface:     #13151F;
+  --bg-elevated:    #1A1D2B;
+  --bg-hover:       #1A1D2B;
+  --text-primary:   #E8EAF6;
+  --text-secondary: #A5ABCF;
+  --text-muted:     #6B7293;
+  --border:         #252A3D;
+  --border-mid:     #252A3D;
+  --accent:         #FB7185;
+  --accent-dark:    #F43F5E;
+  --accent-subtle:  rgba(244,63,94,0.12);
+  --accent-border:  rgba(244,63,94,0.35);
+  --teal:           #34D399;
+  --teal-subtle:    rgba(16,185,129,0.12);
+  --teal-border:    rgba(16,185,129,0.35);
+  --amber-subtle:   rgba(245,158,11,0.12);
+  --ink:            #E8EAF6;
+  --ink-2:          #A5ABCF;
+  --ink-3:          #6B7293;
+  --ink-4:          #3E455E;
+  --cream:          #13151F;
+  --warm-50:        #13151F;
+  --warm-100:       #1A1D2B;
+  --warm-200:       #252A3D;
+  --gold:           #FB7185;
+  --gold-light:     rgba(244,63,94,0.12);
+}
+
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 html { scroll-behavior: smooth; }
 body {
@@ -77,9 +140,45 @@ body {
   font-size: 14px;
   line-height: 1.6;
   -webkit-font-smoothing: antialiased;
+  transition: background 0.3s, color 0.3s;
 }
 ::-webkit-scrollbar { width: 5px; height: 5px; }
 ::-webkit-scrollbar-track { background: var(--gray-100); }
 ::-webkit-scrollbar-thumb { background: var(--gray-300); border-radius: 3px; }
 *:focus-visible { outline: 2px solid var(--rose); outline-offset: 2px; }
 ::selection { background: var(--rose-light); }
+
+/* Telugu text legibility */
+.telugu {
+  font-family: 'Noto Sans Telugu', 'Noto Sans', sans-serif;
+  font-size: 15px;
+  line-height: 1.9;
+  font-weight: 400;
+}
+
+/* Motion: subtle entrance for cards */
+@keyframes fadeInUp {
+  from { opacity: 0; transform: translateY(10px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.animate-fade-in-up {
+  animation: fadeInUp 0.35s cubic-bezier(0.22,1,0.36,1) both;
+}
+
+/* Pulse for active segment */
+@keyframes softPulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(244,63,94,0); }
+  50%      { box-shadow: 0 0 0 4px rgba(244,63,94,0.12); }
+}
+.active-pulse {
+  animation: softPulse 2s ease-in-out infinite;
+}
+
+/* Editor row transitions */
+.editor-row {
+  transition: background-color 0.15s, border-color 0.15s;
+}
+.editor-row.active {
+  background: var(--rose-light) !important;
+  border-left: 3px solid var(--rose);
+}

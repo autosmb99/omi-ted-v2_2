@@ -1,6 +1,7 @@
 """
 Translation service. Provider and model can be overridden per-call.
 Config.yaml sets defaults; batch.py passes explicit values.
+Supports: sarvam, openrouter, local (Ollama/vLLM).
 """
 from __future__ import annotations
 
@@ -13,10 +14,12 @@ import yaml
 
 logger = logging.getLogger(__name__)
 
+
 def _cfg() -> dict:
     p = Path(__file__).parent.parent / "config.yaml"
     with open(p) as f:
         return yaml.safe_load(f)
+
 
 async def _sarvam(text: str, src: str, tgt: str, timeout: int) -> str:
     key = os.environ.get("SARVAM_API_KEY", "")
@@ -34,6 +37,7 @@ async def _sarvam(text: str, src: str, tgt: str, timeout: int) -> str:
         )
         r.raise_for_status()
         return r.json()["translated_text"]
+
 
 async def _openrouter(text: str, src: str, tgt: str, model: str, timeout: int) -> str:
     key = os.environ.get("OPENROUTER_API_KEY", "")
@@ -55,6 +59,29 @@ async def _openrouter(text: str, src: str, tgt: str, model: str, timeout: int) -
         r.raise_for_status()
         return r.json()["choices"][0]["message"]["content"].strip()
 
+
+async def _local(text: str, src: str, tgt: str, model: str, timeout: int) -> str:
+    """Call a local OpenAI-compatible endpoint (Ollama, vLLM, llama.cpp server)."""
+    base = os.environ.get("LOCAL_LLM_URL", "http://localhost:11434/v1")
+    key = os.environ.get("LOCAL_LLM_KEY", "")
+    prompt = (
+        f"Translate this Telugu Christian sermon text to English. "
+        f"Preserve theological terms accurately. Output only the translation.\n\n{text}"
+    )
+    headers = {"Content-Type": "application/json"}
+    if key:
+        headers["Authorization"] = f"Bearer {key}"
+    async with httpx.AsyncClient(timeout=timeout) as c:
+        r = await c.post(
+            f"{base}/chat/completions",
+            headers=headers,
+            json={"model": model, "messages": [{"role": "user", "content": prompt}],
+                  "temperature": 0.1},
+        )
+        r.raise_for_status()
+        return r.json()["choices"][0]["message"]["content"].strip()
+
+
 async def translate(
     text: str,
     src: str = "te",
@@ -74,5 +101,7 @@ async def translate(
         return await _sarvam(text, src, tgt, t)
     elif p == "openrouter":
         return await _openrouter(text, src, tgt, m, t)
+    elif p == "local":
+        return await _local(text, src, tgt, m, t)
     else:
         raise ValueError(f"Unknown provider: {p!r}")
