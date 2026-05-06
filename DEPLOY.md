@@ -22,7 +22,7 @@ Frontend proxies `/api/*` to backend over Railway's private network. No CORS iss
 ### 1. Push the latest code
 
 ```bash
-cd C:\Users\kawin\Projects\omi-ted-v2
+cd <project-root>
 git pull --rebase origin main
 git push origin main
 ```

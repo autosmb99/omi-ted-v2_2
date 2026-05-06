@@ -69,6 +69,7 @@ async def _backoff_sleep(attempt: int) -> None:
 
 @dataclass
 class SegmentData:
+    segment_index: int
     start_time: float
     duration: float
     te_original: str
@@ -148,46 +149,57 @@ def _ytapi_fetch(youtube_id: str) -> tuple[list[dict], list[dict]] | None:
     Try youtube-transcript-api. Returns (te_raw, en_raw) or None if unavailable.
     """
     try:
-        from youtube_transcript_api import YouTubeTranscriptApi, NoTranscriptFound, TranscriptsDisabled
+        from youtube_transcript_api import YouTubeTranscriptApi
     except ImportError:
         return None  # library not installed
 
     try:
-        transcript_list = YouTubeTranscriptApi.list_transcripts(youtube_id)
+        ytt = YouTubeTranscriptApi()
+        transcript_list = ytt.list(youtube_id)
     except Exception:
         return None
 
+    def _normalize(raw) -> list[dict]:
+        rows: list[dict] = []
+        for item in raw:
+            if isinstance(item, dict):
+                rows.append({
+                    "start_time": item["start"],
+                    "duration": item.get("duration", 0),
+                    "text": item["text"],
+                })
+            else:
+                rows.append({
+                    "start_time": item.start,
+                    "duration": getattr(item, "duration", 0),
+                    "text": item.text,
+                })
+        return rows
+
     # Fetch Telugu
     te_raw: list[dict] = []
+    te_transcript = None
     try:
         te_transcript = transcript_list.find_transcript(["te"])
         raw = te_transcript.fetch()
-        te_raw = [
-            {
-                "start_time": item["start"],
-                "duration": item.get("duration", 0),
-                "text": item["text"],
-            }
-            for item in raw
-        ]
+        te_raw = _normalize(raw)
     except Exception:
         pass
 
-    # Fetch English (optional)
+    # Fetch English (optional). If no native English captions exist, ask
+    # YouTube for its free Telugu -> English caption translation.
     en_raw: list[dict] = []
     try:
         en_transcript = transcript_list.find_transcript(["en"])
         raw = en_transcript.fetch()
-        en_raw = [
-            {
-                "start_time": item["start"],
-                "duration": item.get("duration", 0),
-                "text": item["text"],
-            }
-            for item in raw
-        ]
     except Exception:
-        pass
+        try:
+            raw = te_transcript.translate("en").fetch() if te_transcript else []
+        except Exception:
+            raw = []
+
+    if raw:
+        en_raw = _normalize(raw)
 
     return te_raw, en_raw
 
@@ -200,7 +212,7 @@ def _pick_json3(formats: list[dict]) -> str | None:
     for fmt in formats:
         if fmt.get("ext") == "json3":
             return fmt.get("url")
-    return formats[0].get("url") if formats else None
+    return None
 
 
 def _parse_json3(data: dict) -> list[dict]:
@@ -349,18 +361,18 @@ async def fetch_video(youtube_id: str) -> VideoData:
         te_raw, en_raw = ytapi_result
 
     # ── Strategy 2: yt-dlp (also gets metadata) ───────────────────────────
-    if not te_raw:
+    if not te_raw or not en_raw:
         try:
             te_url, en_url, info = await _ytdlp_fetch(youtube_id)
-            title      = info.get("title")
-            channel    = info.get("uploader") or info.get("channel")
-            duration_s = info.get("duration")
+            title      = info.get("title") or title
+            channel    = info.get("uploader") or info.get("channel") or channel
+            duration_s = info.get("duration") or duration_s
 
-            if te_url:
-                cookies_file = os.environ.get("YTDLP_COOKIES_FILE", "").strip() or None
+            cookies_file = os.environ.get("YTDLP_COOKIES_FILE", "").strip() or None
+            if not te_raw and te_url:
                 te_raw = await _download_subtitle(te_url, cookies_file, required=True)
-                if en_url:
-                    en_raw = await _download_subtitle(en_url, cookies_file, required=False)
+            if not en_raw and en_url:
+                en_raw = await _download_subtitle(en_url, cookies_file, required=False)
         except Exception as exc:
             if not te_raw:
                 raise ValueError(
@@ -392,12 +404,13 @@ async def fetch_video(youtube_id: str) -> VideoData:
 
     segments = [
         SegmentData(
+            segment_index=idx,
             start_time=chunk["start_time"],
             duration=chunk["duration"],
             te_original=chunk["text"],
             en_auto=_find_en(chunk["start_time"]),
         )
-        for chunk in te_chunks
+        for idx, chunk in enumerate(te_chunks)
     ]
 
     return VideoData(

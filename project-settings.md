@@ -241,6 +241,12 @@ NEXT_PUBLIC_API_BASE=http://localhost:8000         # local
 
 Full discipline lives in `SYNC-WORKFLOW.md`. Quick reference:
 
+### Windows / WSL safety
+
+- Prefer Git for Windows when editing the Windows workspace at `C:\Users\<user>\Projects\omi-ted-v2`.
+- If using WSL, prefer a native WSL2 ext4 clone such as `~/projects/omi-ted-v2` for edits and commits.
+- Treat temporary clones as a last-resort workaround for reproducing or bypassing Windows mount issues; do not store credentials in clone URLs.
+
 **End of session (mandatory):**
 ```powershell
 # Fill .handoffs\YYYYMMDD-NN-{machine}.md from HANDOFF-TEMPLATE.md

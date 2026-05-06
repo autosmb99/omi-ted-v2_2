@@ -25,6 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_session
 from models import Segment, Video
+from services.transcript import fetch_video
 from services.translate import translate
 
 logger = logging.getLogger(__name__)
@@ -66,6 +67,64 @@ async def batch_translate(
     segments = seg_result.scalars().all()
 
     if body.provider == "youtube":
+        # Free: backfill YouTube's own Telugu -> English caption translation
+        # when older ingests have Telugu but no en_auto, then promote en_auto
+        # to en_final where the human column is still empty.
+        needs_backfill = [
+            s for s in segments
+            if body.force or not (s.en_auto and s.en_auto.strip())
+        ]
+        existing_auto_count = sum(
+            1 for s in segments
+            if s.en_auto and s.en_auto.strip()
+        )
+        if needs_backfill:
+            try:
+                data = await fetch_video(video.youtube_id)
+            except Exception as exc:
+                if existing_auto_count == 0:
+                    raise HTTPException(
+                        status_code=424,
+                        detail=(
+                            "YouTube free auto-translation is unavailable for this video right now. "
+                            f"Telugu captions were found, but English translated captions could not be fetched: {exc}"
+                        ),
+                    ) from exc
+                data = None
+
+            fetched_by_index = {
+                seg.segment_index: seg
+                for seg in (data.segments if data else [])
+                if seg.en_auto and seg.en_auto.strip()
+            }
+            fetched = list(fetched_by_index.values())
+            if not fetched and existing_auto_count == 0:
+                raise HTTPException(
+                    status_code=424,
+                    detail=(
+                        "YouTube free auto-translation is unavailable for this video right now. "
+                        "Telugu captions were found, but YouTube did not return English translated captions. "
+                        "Retry later or use Sarvam/OpenRouter."
+                    ),
+                )
+
+            def _match_en_auto(segment: Segment) -> str | None:
+                if not fetched:
+                    return None
+                by_index = fetched_by_index.get(segment.segment_index)
+                if by_index and abs(by_index.start_time - segment.start_time) <= 2.0:
+                    return by_index.en_auto
+
+                best = min(
+                    fetched,
+                    key=lambda candidate: abs(candidate.start_time - segment.start_time),
+                )
+                return best.en_auto if abs(best.start_time - segment.start_time) <= 2.0 else None
+
+            for s in needs_backfill:
+                en_auto = _match_en_auto(s)
+                if en_auto:
+                    s.en_auto = en_auto
         # Free — just promote en_auto → en_final for segments that have it
         count = 0
         for s in segments:

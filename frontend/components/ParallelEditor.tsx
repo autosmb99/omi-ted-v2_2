@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useReactTable, getCoreRowModel, flexRender, createColumnHelper } from "@tanstack/react-table";
 import { motion } from "motion/react";
 import axios from "axios";
@@ -137,10 +137,15 @@ function EditableCell({ segment, isSaving, isSaved, onSave }: {
   const [value, setValue] = useState(segment.en_human ?? "");
   const ref = useRef<HTMLTextAreaElement>(null);
 
+  useEffect(() => {
+    setValue(segment.en_human ?? "");
+  }, [segment.id, segment.en_human]);
+
   return (
     <div className="relative">
       <textarea
         ref={ref}
+        aria-label={`Translation for segment ${segment.segment_index + 1}`}
         value={value}
         onChange={(e) => setValue(e.target.value)}
         onBlur={() => onSave(segment, value)}

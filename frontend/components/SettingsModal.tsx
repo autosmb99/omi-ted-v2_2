@@ -12,14 +12,25 @@ export default function SettingsModal({ open, onClose }: Props) {
   const [openrouter, setOpenrouter] = useState("");
   const [saving, setSaving]         = useState(false);
   const [saved, setSaved]           = useState(false);
+  const [error, setError]           = useState<string | null>(null);
   const ref = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    if (open) axios.get<KeyStatus>("/api/v1/settings").then((r) => setStatus(r.data));
+    if (open) {
+      setError(null);
+      axios.get<KeyStatus>("/api/v1/settings")
+        .then((r) => setStatus(r.data))
+        .catch((err: unknown) => {
+          const msg = axios.isAxiosError(err)
+            ? err.response?.data?.detail ?? err.message
+            : String(err);
+          setError(typeof msg === "string" ? msg : JSON.stringify(msg));
+        });
+    }
   }, [open]);
 
   async function handleSave() {
-    setSaving(true);
+    setSaving(true); setError(null); setSaved(false);
     try {
       const r = await axios.post<KeyStatus>("/api/v1/settings", {
         ...(sarvam.trim()     ? { sarvam_api_key:     sarvam.trim()     } : {}),
@@ -28,6 +39,11 @@ export default function SettingsModal({ open, onClose }: Props) {
       setStatus(r.data);
       setSarvam(""); setOpenrouter("");
       setSaved(true); setTimeout(() => setSaved(false), 2500);
+    } catch (err: unknown) {
+      const msg = axios.isAxiosError(err)
+        ? err.response?.data?.detail ?? err.message
+        : String(err);
+      setError(typeof msg === "string" ? msg : JSON.stringify(msg));
     } finally { setSaving(false); }
   }
 
@@ -66,7 +82,7 @@ export default function SettingsModal({ open, onClose }: Props) {
                     Saved to disk — enter once, persists forever.
                   </p>
                 </div>
-                <button onClick={onClose}
+                <button onClick={onClose} aria-label="Close settings" title="Close settings"
                   style={{
                     background: "none", border: "none", cursor: "pointer",
                     color: "var(--gray-400)", fontSize: 20, padding: "2px 6px", lineHeight: 1,
@@ -108,6 +124,12 @@ export default function SettingsModal({ open, onClose }: Props) {
                 {saving ? "Saving…" : saved ? "✓ Saved!" : "Save keys"}
               </motion.button>
 
+              {error && (
+                <p style={{ textAlign: "center", fontSize: 11, color: "var(--red)", margin: "-4px 0 0" }}>
+                  {error}
+                </p>
+              )}
+
               <p style={{ textAlign: "center", fontSize: 11, color: "var(--gray-400)", margin: 0 }}>
                 Keys are write-only and never shown back.
               </p>
@@ -147,6 +169,7 @@ function KeyRow({ label, hint, isSet, value, onChange, placeholder, link }: {
       </div>
       <p style={{ fontSize: 11, color: "var(--gray-400)", margin: "0 0 8px" }}>{hint}</p>
       <input type="password" value={value} onChange={(e) => onChange(e.target.value)}
+        aria-label={`${label} API key`}
         placeholder={isSet ? "Enter new key to replace" : placeholder}
         style={{
           width: "100%", padding: "8px 10px", borderRadius: 7,
