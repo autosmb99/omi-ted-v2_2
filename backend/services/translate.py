@@ -2,15 +2,22 @@
 Translation service. Provider and model can be overridden per-call.
 Config.yaml sets defaults; batch.py passes explicit values.
 Supports: sarvam, openrouter, local (Ollama/vLLM).
+Caches results in TranslationMemory to avoid duplicate API costs.
 """
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 from pathlib import Path
 
 import httpx
 import yaml
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from database import AsyncSessionLocal
+from models import TranslationMemory
 
 logger = logging.getLogger(__name__)
 
@@ -19,6 +26,46 @@ def _cfg() -> dict:
     p = Path(__file__).parent.parent / "config.yaml"
     with open(p) as f:
         return yaml.safe_load(f)
+
+
+def _cache_key(text: str, src: str, tgt: str, provider: str) -> str:
+    return hashlib.sha256(f"{text}|{src}|{tgt}|{provider}".encode()).hexdigest()[:32]
+
+
+async def _lookup_cache(text: str, src: str, tgt: str, provider: str) -> str | None:
+    """Return cached translation if exact match exists."""
+    key = _cache_key(text, src, tgt, provider)
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            select(TranslationMemory).where(TranslationMemory.te_text == text)
+        )
+        row = result.scalar_one_or_none()
+        if row:
+            row.usage_count += 1
+            await session.commit()
+            return row.en_text
+    return None
+
+
+async def _save_cache(text: str, en_text: str, source_video_id: int | None = None,
+                      source_segment_id: int | None = None) -> None:
+    """Save a new translation to the cache."""
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            select(TranslationMemory).where(TranslationMemory.te_text == text)
+        )
+        existing = result.scalar_one_or_none()
+        if existing:
+            existing.en_text = en_text
+            existing.usage_count += 1
+        else:
+            session.add(TranslationMemory(
+                te_text=text,
+                en_text=en_text,
+                source_video_id=source_video_id,
+                source_segment_id=source_segment_id,
+            ))
+        await session.commit()
 
 
 async def _sarvam(text: str, src: str, tgt: str, timeout: int) -> str:
@@ -97,11 +144,23 @@ async def translate(
     m = model or llm.get("model", "google/gemma-3-27b-it")
     t = llm.get("timeout_s", 30)
 
+    # Check cache first (skip for youtube provider - it doesn't call APIs)
+    if p != "youtube":
+        cached = await _lookup_cache(text, src, tgt, p)
+        if cached is not None:
+            logger.debug("Cache hit for text len=%d provider=%s", len(text), p)
+            return cached
+
+    result: str
     if p == "sarvam":
-        return await _sarvam(text, src, tgt, t)
+        result = await _sarvam(text, src, tgt, t)
     elif p == "openrouter":
-        return await _openrouter(text, src, tgt, m, t)
+        result = await _openrouter(text, src, tgt, m, t)
     elif p == "local":
-        return await _local(text, src, tgt, m, t)
+        result = await _local(text, src, tgt, m, t)
     else:
         raise ValueError(f"Unknown provider: {p!r}")
+
+    # Save to cache for future reuse
+    await _save_cache(text, result)
+    return result

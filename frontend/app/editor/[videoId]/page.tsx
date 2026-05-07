@@ -363,6 +363,58 @@ export default function EditorPage() {
         }
         return;
       }
+      if (e.key === "a" && activeId !== null) {
+        e.preventDefault();
+        const seg = allSegments.find(s => s.id === activeId);
+        if (seg && seg.en_auto) {
+          const en_human = seg.en_auto;
+          axios.patch(`/api/v1/segments/${activeId}`, {
+            en_human, is_reviewed: true, quality_score: 4,
+          }).then(({ data: u }) => {
+            handleUpdate(activeId, u);
+            // Jump to next
+            const idx = filtered.findIndex(s => s.id === activeId);
+            const nextIdx = idx + 1;
+            if (nextIdx < filtered.length) {
+              const nextSeg = filtered[nextIdx];
+              setActiveId(nextSeg.id);
+              setActiveTime(nextSeg.start_time);
+              listRef.current?.scrollToItem(nextIdx, "smart");
+              setFocusEnglish(true);
+            }
+          });
+        }
+        return;
+      }
+      if (e.key === "u") {
+        e.preventDefault();
+        if (!filtered.length) return;
+        const idx = filtered.findIndex(s => s.id === activeId);
+        // Find next untranslated segment (no en_human)
+        let nextIdx = idx + 1;
+        while (nextIdx < filtered.length) {
+          const s = filtered[nextIdx];
+          if (!s.en_human || !s.en_human.trim()) break;
+          nextIdx++;
+        }
+        if (nextIdx >= filtered.length) {
+          // Wrap around to beginning
+          nextIdx = 0;
+          while (nextIdx < filtered.length) {
+            const s = filtered[nextIdx];
+            if (!s.en_human || !s.en_human.trim()) break;
+            nextIdx++;
+          }
+        }
+        if (nextIdx < filtered.length) {
+          const nextSeg = filtered[nextIdx];
+          setActiveId(nextSeg.id);
+          setActiveTime(nextSeg.start_time);
+          listRef.current?.scrollToItem(nextIdx, "smart");
+          setFocusEnglish(true);
+        }
+        return;
+      }
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -430,6 +482,40 @@ export default function EditorPage() {
     a.download = `${videoId}.jsonl`;
     a.click();
     URL.revokeObjectURL(url);
+  }
+
+  async function bulkAccept() {
+    const toAccept = allSegments.filter(s => s.en_auto && !s.en_human && !s.is_reviewed);
+    if (!toAccept.length) { setFetchMsg("No auto-translations to accept."); return; }
+    setFetchingEn(true); setFetchMsg(`Accepting ${toAccept.length} segments…`);
+    let done = 0;
+    for (const s of toAccept) {
+      try {
+        await axios.patch(`/api/v1/segments/${s.id}`, {
+          en_human: s.en_auto, is_reviewed: true, quality_score: 4,
+        });
+        handleUpdate(s.id, { en_human: s.en_auto, is_reviewed: true, quality_score: 4 });
+        done++;
+      } catch (e) { console.error(e); }
+    }
+    setFetchingEn(false);
+    setFetchMsg(`Accepted ${done}/${toAccept.length} auto-translations.`);
+  }
+
+  async function bulkReviewAll() {
+    const toReview = allSegments.filter(s => s.en_human && !s.is_reviewed);
+    if (!toReview.length) { setFetchMsg("No translated segments to review."); return; }
+    setFetchingEn(true); setFetchMsg(`Reviewing ${toReview.length} segments…`);
+    let done = 0;
+    for (const s of toReview) {
+      try {
+        await axios.patch(`/api/v1/segments/${s.id}`, { is_reviewed: true, quality_score: 4 });
+        handleUpdate(s.id, { is_reviewed: true, quality_score: 4 });
+        done++;
+      } catch (e) { console.error(e); }
+    }
+    setFetchingEn(false);
+    setFetchMsg(`Reviewed ${done}/${toReview.length} segments.`);
   }
 
   const reviewedCount = allSegments.filter(s => s.is_reviewed).length;
@@ -547,6 +633,14 @@ export default function EditorPage() {
                 style={{ padding: "5px 12px", borderRadius: 7, border: "1px solid var(--gray-200)", background: "var(--white)", color: "var(--gray-600)", fontSize: 11, cursor: "pointer" }}>
                 ↓ JSONL
               </button>
+              <button onClick={bulkAccept} disabled={fetchingEn}
+                style={{ padding: "5px 12px", borderRadius: 7, border: "1px solid var(--green-border)", background: fetchingEn ? "var(--gray-100)" : "var(--green-light)", color: "var(--green)", fontSize: 11, cursor: fetchingEn ? "not-allowed" : "pointer" }}>
+                Bulk Accept
+              </button>
+              <button onClick={bulkReviewAll} disabled={fetchingEn}
+                style={{ padding: "5px 12px", borderRadius: 7, border: "1px solid var(--rose-border, var(--rose))", background: fetchingEn ? "var(--gray-100)" : "rgba(244,63,94,0.08)", color: "var(--rose)", fontSize: 11, cursor: fetchingEn ? "not-allowed" : "pointer" }}>
+                Bulk Review
+              </button>
             </div>
           </div>
 
@@ -564,6 +658,8 @@ export default function EditorPage() {
             <span><kbd style={{ background: "var(--gray-100)", padding: "1px 4px", borderRadius: 4, fontFamily: "JetBrains Mono" }}>1-5</kbd> quality</span>
             <span><kbd style={{ background: "var(--gray-100)", padding: "1px 4px", borderRadius: 4, fontFamily: "JetBrains Mono" }}>r</kbd> review</span>
             <span><kbd style={{ background: "var(--gray-100)", padding: "1px 4px", borderRadius: 4, fontFamily: "JetBrains Mono" }}>s</kbd> song</span>
+            <span><kbd style={{ background: "var(--gray-100)", padding: "1px 4px", borderRadius: 4, fontFamily: "JetBrains Mono" }}>a</kbd> accept auto</span>
+            <span><kbd style={{ background: "var(--gray-100)", padding: "1px 4px", borderRadius: 4, fontFamily: "JetBrains Mono" }}>u</kbd> untranslated</span>
           </div>
         </div>
       </div>
