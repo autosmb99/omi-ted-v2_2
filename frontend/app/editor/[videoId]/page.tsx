@@ -533,6 +533,7 @@ export default function EditorPage() {
                 <option value="youtube">YouTube (free)</option>
                 <option value="sarvam">Sarvam</option>
                 <option value="openrouter">OpenRouter</option>
+                <option value="local">Local (Ollama)</option>
               </select>
               <button onClick={fetchEnglish} disabled={fetchingEn}
                 style={{ padding: "5px 12px", borderRadius: 7, border: "1px solid var(--gray-200)", background: fetchingEn ? "var(--gray-100)" : "var(--white)", color: "var(--gray-600)", fontSize: 11, cursor: fetchingEn ? "not-allowed" : "pointer" }}>
