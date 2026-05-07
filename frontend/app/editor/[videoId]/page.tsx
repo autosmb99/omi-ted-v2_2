@@ -267,6 +267,7 @@ export default function EditorPage() {
   const [glossaryEn, setGlossaryEn] = useState("");
   const [fetchingEn, setFetchingEn] = useState(false);
   const [fetchMsg, setFetchMsg] = useState("");
+  const [provider, setProvider] = useState("youtube");
   const listRef = useRef<FixedSizeList>(null);
 
   const { data, error, isLoading, mutate } = useSWR<SegmentsPage>(
@@ -390,9 +391,9 @@ export default function EditorPage() {
   async function fetchEnglish() {
     setFetchingEn(true); setFetchMsg("");
     try {
-      const res = await axios.post("/api/v1/batch/translate", {
-        youtube_id: videoId, provider: "youtube", force: true
-      });
+      const payload: any = { youtube_id: videoId, provider, force: true };
+      if (provider === "openrouter") payload.model = "google/gemma-3-27b-it";
+      const res = await axios.post("/api/v1/batch/translate", payload);
       setFetchMsg(res.data.message);
       mutate(); // refresh segments
     } catch (e: any) {
@@ -526,7 +527,13 @@ export default function EditorPage() {
             <span style={{ fontSize: 12, color: "var(--gray-400)" }}>
               Showing {filtered.length} of {allSegments.length} segments
             </span>
-            <div style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
+            <div style={{ marginLeft: "auto", display: "flex", gap: 6, alignItems: "center" }}>
+              <select value={provider} onChange={e => setProvider(e.target.value)}
+                style={{ padding: "5px 8px", borderRadius: 7, border: "1px solid var(--gray-200)", background: "var(--white)", color: "var(--gray-600)", fontSize: 11, outline: "none", cursor: "pointer" }}>
+                <option value="youtube">YouTube (free)</option>
+                <option value="sarvam">Sarvam</option>
+                <option value="openrouter">OpenRouter</option>
+              </select>
               <button onClick={fetchEnglish} disabled={fetchingEn}
                 style={{ padding: "5px 12px", borderRadius: 7, border: "1px solid var(--gray-200)", background: fetchingEn ? "var(--gray-100)" : "var(--white)", color: "var(--gray-600)", fontSize: 11, cursor: fetchingEn ? "not-allowed" : "pointer" }}>
                 {fetchingEn ? "Fetching…" : "Fetch English"}
@@ -541,6 +548,12 @@ export default function EditorPage() {
               </button>
             </div>
           </div>
+
+          {fetchMsg && (
+            <div style={{ fontSize: 11, color: fetchMsg.includes("error") || fetchMsg.includes("Failed") ? "var(--red)" : "var(--green)", padding: "4px 8px", borderRadius: 6, background: fetchMsg.includes("error") || fetchMsg.includes("Failed") ? "rgba(239,68,68,0.08)" : "rgba(34,197,94,0.08)", border: `1px solid ${fetchMsg.includes("error") || fetchMsg.includes("Failed") ? "var(--red)" : "var(--green-border)"}` }}>
+              {fetchMsg}
+            </div>
+          )}
 
           {/* Shortcuts legend */}
           <div style={{ display: "flex", flexWrap: "wrap", gap: "4px 12px", fontSize: 10, color: "var(--gray-400)", marginTop: 2 }}>
