@@ -9,6 +9,7 @@ interface KeyStatus {
   google_key_set: boolean;
   local_url_set: boolean;
   local_key_set: boolean;
+  cookies_set: boolean;
 }
 interface Props { open: boolean; onClose: () => void; }
 
@@ -131,6 +132,21 @@ export default function SettingsModal({ open, onClose }: Props) {
                 value={localKey} onChange={setLocalKey}
                 placeholder="optional-key" link=""
               />
+
+              {/* Cookies status (read-only) */}
+              <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 0", borderTop: "1px solid var(--gray-100)" }}>
+                <span style={{ fontSize: 13, fontWeight: 500, color: "var(--gray-700)", width: 120 }}>YouTube Cookies</span>
+                <span style={{
+                  fontSize: 11, fontWeight: 600, padding: "3px 10px", borderRadius: 99,
+                  background: status?.cookies_set ? "var(--green-light)" : "var(--gray-100)",
+                  color: status?.cookies_set ? "var(--green)" : "var(--gray-400)",
+                }}>
+                  {status?.cookies_set ? "Active" : "Not found"}
+                </span>
+                <span style={{ fontSize: 11, color: "var(--gray-400)", flex: 1 }}>
+                  {status?.cookies_set ? "Reduces 429 errors" : "Add cookies.txt to project root"}
+                </span>
+              </div>
 
               <motion.button onClick={handleSave}
                 disabled={saving || (!sarvam.trim() && !openrouter.trim() && !localUrl.trim() && !localKey.trim())}

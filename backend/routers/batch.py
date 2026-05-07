@@ -25,7 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_session
 from models import Segment, Video
-from services.transcript import fetch_video
+from services.transcript import fetch_video, fetch_english_only, merge_into_sentences
 from services.translate import translate
 
 logger = logging.getLogger(__name__)
@@ -79,18 +79,29 @@ async def batch_translate(
             if s.en_auto and s.en_auto.strip()
         )
         if needs_backfill:
+            data = None
             try:
                 data = await fetch_video(video.youtube_id)
-            except Exception as exc:
-                if existing_auto_count == 0:
-                    raise HTTPException(
-                        status_code=424,
-                        detail=(
-                            "YouTube free auto-translation is unavailable for this video right now. "
-                            f"Telugu captions were found, but English translated captions could not be fetched: {exc}"
-                        ),
-                    ) from exc
-                data = None
+            except Exception:
+                pass  # English might still be fetchable via fallback
+
+            # Fallback: try yt-dlp direct English fetch
+            if not data or not any(s.en_auto for s in data.segments):
+                try:
+                    en_raw = await fetch_english_only(video.youtube_id)
+                    if en_raw and data:
+                        en_chunks = merge_into_sentences(en_raw, pause_threshold=1.2, max_chars=300)
+                        en_lookup = [(c["start_time"], c["text"]) for c in en_chunks]
+                        for s in data.segments:
+                            best_text, best_dist = None, float("inf")
+                            for en_start, en_text in en_lookup:
+                                dist = abs(en_start - s.start_time)
+                                if dist < best_dist:
+                                    best_dist, best_text = dist, en_text
+                            if best_dist <= 2.0:
+                                s.en_auto = best_text
+                except Exception:
+                    pass
 
             fetched_by_index = {
                 seg.segment_index: seg

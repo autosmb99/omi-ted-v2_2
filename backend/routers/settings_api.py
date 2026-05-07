@@ -69,6 +69,7 @@ class SettingsResponse(BaseModel):
     google_key_set: bool
     local_url_set: bool
     local_key_set: bool
+    cookies_set: bool
 
 
 class SettingsWrite(BaseModel):
@@ -83,12 +84,14 @@ class SettingsWrite(BaseModel):
 async def get_settings() -> SettingsResponse:
     """Return which API keys are configured (never exposes key values)."""
     env = _read_env()
+    cookies_path = env.get("YTDLP_COOKIES_FILE", "").strip()
     return SettingsResponse(
         sarvam_key_set=bool(env.get("SARVAM_API_KEY", "").strip()),
         openrouter_key_set=bool(env.get("OPENROUTER_API_KEY", "").strip()),
         google_key_set=bool(env.get("GOOGLE_API_KEY", "").strip()),
         local_url_set=bool(env.get("LOCAL_LLM_URL", "").strip()),
         local_key_set=bool(env.get("LOCAL_LLM_KEY", "").strip()),
+        cookies_set=bool(cookies_path) and Path(cookies_path).exists(),
     )
 
 

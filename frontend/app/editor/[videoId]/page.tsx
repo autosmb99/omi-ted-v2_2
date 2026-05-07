@@ -87,13 +87,14 @@ function TMSuggestions({ query, onSelect }: { query: string; onSelect: (text: st
 function SegmentRow({ index, style, data }: { index: number; style: React.CSSProperties; data: RowData }) {
   const seg = data.segments[index];
   const isActive = data.activeId === seg.id;
-  const [val, setVal] = useState(seg.en_human ?? "");
+  const initial = seg.en_final || seg.en_auto || "";
+  const [val, setVal] = useState(initial);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [tmQuery, setTmQuery] = useState("");
   const ref = useRef<HTMLTextAreaElement>(null);
 
-  useEffect(() => { setVal(seg.en_human ?? ""); }, [seg.id, seg.en_human]);
+  useEffect(() => { setVal(seg.en_final || seg.en_auto || ""); }, [seg.id, seg.en_final, seg.en_auto]);
   useEffect(() => {
     if (isActive && data.focusEnglish && ref.current) {
       ref.current.focus();
@@ -103,7 +104,7 @@ function SegmentRow({ index, style, data }: { index: number; style: React.CSSPro
 
   async function save(newValue: string) {
     const trimmed = newValue.trim();
-    if (trimmed === (seg.en_human ?? "")) return;
+    if (trimmed === (seg.en_final || "")) return;
     setSaving(true);
     try {
       const { data: updated } = await axios.patch(`/api/v1/segments/${seg.id}`, {
@@ -264,6 +265,8 @@ export default function EditorPage() {
   const [selectPos, setSelectPos] = useState({ x: 0, y: 0 });
   const [showGlossaryForm, setShowGlossaryForm] = useState(false);
   const [glossaryEn, setGlossaryEn] = useState("");
+  const [fetchingEn, setFetchingEn] = useState(false);
+  const [fetchMsg, setFetchMsg] = useState("");
   const listRef = useRef<FixedSizeList>(null);
 
   const { data, error, isLoading, mutate } = useSWR<SegmentsPage>(
@@ -382,6 +385,21 @@ export default function EditorPage() {
       setGlossaryEn("");
       setSelectedText("");
     } catch (e) { console.error(e); }
+  }
+
+  async function fetchEnglish() {
+    setFetchingEn(true); setFetchMsg("");
+    try {
+      const res = await axios.post("/api/v1/batch/translate", {
+        youtube_id: videoId, provider: "youtube", force: true
+      });
+      setFetchMsg(res.data.message);
+      mutate(); // refresh segments
+    } catch (e: any) {
+      setFetchMsg(e.response?.data?.detail || "Failed to fetch English captions.");
+    } finally {
+      setFetchingEn(false);
+    }
   }
 
   function downloadText() {
@@ -509,6 +527,10 @@ export default function EditorPage() {
               Showing {filtered.length} of {allSegments.length} segments
             </span>
             <div style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
+              <button onClick={fetchEnglish} disabled={fetchingEn}
+                style={{ padding: "5px 12px", borderRadius: 7, border: "1px solid var(--gray-200)", background: fetchingEn ? "var(--gray-100)" : "var(--white)", color: "var(--gray-600)", fontSize: 11, cursor: fetchingEn ? "not-allowed" : "pointer" }}>
+                {fetchingEn ? "Fetching…" : "Fetch English"}
+              </button>
               <button onClick={downloadText}
                 style={{ padding: "5px 12px", borderRadius: 7, border: "1px solid var(--gray-200)", background: "var(--white)", color: "var(--gray-600)", fontSize: 11, cursor: "pointer" }}>
                 ↓ Text

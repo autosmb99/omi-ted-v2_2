@@ -293,6 +293,10 @@ def _ydl_extract(youtube_id: str, cookies_file: str | None) -> dict:
     opts = {**_YDL_OPTS}
     if cookies_file and os.path.exists(cookies_file):
         opts["cookiefile"] = cookies_file
+    # Force listing of all available subtitle languages including auto-translated
+    opts["writesubtitles"] = True
+    opts["writeautomaticsub"] = True
+    opts["subtitleslangs"] = ["te", "en"]
     with yt_dlp.YoutubeDL(opts) as ydl:
         return ydl.extract_info(url, download=False) or {}
 
@@ -333,6 +337,26 @@ async def _ytdlp_fetch(youtube_id: str) -> tuple[str | None, str | None, dict]:
     te_url = _pick_json3(te_formats) if te_formats else None
     en_url = _pick_json3(en_formats) if en_formats else None
     return te_url, en_url, info
+
+
+async def fetch_english_only(youtube_id: str) -> list[dict]:
+    """
+    Aggressively fetch English auto-translated captions for a video
+    that already has Telugu segments. Uses yt-dlp with cookies.
+    Returns raw English caption events or empty list.
+    """
+    cookies_file = os.environ.get("YTDLP_COOKIES_FILE", "").strip() or None
+    te_url, en_url, info = await _ytdlp_fetch(youtube_id)
+    if en_url:
+        return await _download_subtitle(en_url, cookies_file, required=False)
+    # If no direct en URL, try to find a translation via automatic_captions
+    auto_caps = info.get("automatic_captions") or {}
+    for lang in ("en", "en-IN", "en-US", "en-GB"):
+        formats = auto_caps.get(lang) or []
+        url = _pick_json3(formats)
+        if url:
+            return await _download_subtitle(url, cookies_file, required=False)
+    return []
 
 
 # ---------------------------------------------------------------------------
@@ -385,6 +409,9 @@ async def fetch_video(youtube_id: str) -> VideoData:
             f"No Telugu captions found for video '{youtube_id}'. "
             "Check that the video has Telugu auto-captions enabled on YouTube."
         )
+
+    # English is optional — if we couldn't fetch it, still return Telugu segments
+    # so the video can be ingested. Caller can backfill English later via batch. 
 
     # ── Merge bubble captions into sentences ──────────────────────────────
     te_chunks = merge_into_sentences(te_raw, pause_threshold=1.2, max_chars=200)
