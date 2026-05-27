@@ -2,19 +2,11 @@
 const nextConfig = {
   output: "standalone",
   /**
-   * Proxy /api/* → backend.
-   * Locally: http://localhost:8000
-   * Railway: set BACKEND_URL env var to internal Railway backend URL
+   * /api/* proxying is handled at runtime by middleware.ts, NOT here.
+   * next.config.js is evaluated at build time, so any env var read here
+   * would be baked in as undefined and fall back to localhost — useless
+   * in production. middleware.ts reads BACKEND_URL on every request instead.
    */
-  async rewrites() {
-    const backendUrl = process.env.BACKEND_URL ?? "http://localhost:8000";
-    return [
-      {
-        source: "/api/:path*",
-        destination: `${backendUrl}/api/:path*`,
-      },
-    ];
-  },
 };
 
 module.exports = nextConfig;
