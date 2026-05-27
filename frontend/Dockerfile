@@ -13,8 +13,8 @@ WORKDIR /app
 ENV NEXT_TELEMETRY_DISABLED=1
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
-# BACKEND_URL is wired into next.config.js rewrites at *runtime*, but
-# NEXT_PUBLIC_* vars must be present at build time if used.
+# BACKEND_URL is read at *request time* by middleware.ts — do NOT pass it
+# as a build ARG. NEXT_PUBLIC_* vars must be present at build time if used.
 ARG NEXT_PUBLIC_API_BASE=/api/v1
 ENV NEXT_PUBLIC_API_BASE=$NEXT_PUBLIC_API_BASE
 RUN npm run build
