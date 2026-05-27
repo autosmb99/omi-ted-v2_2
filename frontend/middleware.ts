@@ -12,7 +12,7 @@ export const config = {
 };
 
 export default async function middleware(req: NextRequest) {
-  const backendUrl = process.env.BACKEND_URL ?? "http://localhost:8000";
+  const backendUrl = process.env.BACKEND_URL ?? "https://omi-ted-v22-production.up.railway.app";
 
   // Reconstruct the full target URL, preserving path and query string
   const incoming = req.nextUrl;
